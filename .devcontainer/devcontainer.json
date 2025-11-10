@@ -1,0 +1,7 @@
+{
+  "name": "API in Compose",
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "api",
+  "workspaceFolder": "/app",
+  "postAttachCommand": "pip show fastapi || true"
+}

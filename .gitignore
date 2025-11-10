@@ -1,0 +1,15 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# VS Code / SO
+.vscode/
+.DS_Store
+
+# Logs
+*.log
+
+# Docker
+*.env
+keys/

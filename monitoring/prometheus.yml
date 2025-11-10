@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 5s
+scrape_configs:
+  - job_name: 'api'
+    static_configs:
+      - targets: ['api:8000']
+        labels: { group: 'api' }
+  - job_name: 'workers'
+    static_configs:
+      - targets: ['worker_a:9101','worker_b:9102']
+        labels: { group: 'workers' }
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node_exporter:9100']
+        labels: { group: 'infra' }

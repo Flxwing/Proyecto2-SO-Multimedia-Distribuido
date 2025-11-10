@@ -1,0 +1,46 @@
+<!doctype html><html lang="es"><head>
+<meta charset="utf-8"><title>Player demo</title>
+<style>body{font-family:system-ui;max-width:900px;margin:24px} .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap} .box{border:1px solid #ddd;border-radius:10px;padding:16px;margin:12px 0} li{cursor:pointer;margin:4px 0}</style>
+</head><body>
+<h1>Sistema Multimedia – Demo</h1>
+
+<div class="box"><h3>Subir archivo</h3>
+  <div class="row">
+    <input id="file" type="file" />
+    <button id="btnUpload">Subir</button>
+    <span id="msg"></span>
+  </div>
+</div>
+
+<div class="box"><h3>Archivos en MinIO</h3>
+  <button id="btnRefresh">Actualizar lista</button>
+  <ul id="list"></ul>
+</div>
+
+<div class="box"><h3>Reproductor</h3><div id="player"></div></div>
+
+<script>
+const API="http://localhost:8000";
+function renderPlayer(name){
+  const src=`${API}/media/${encodeURIComponent(name)}`;
+  const ext=name.toLowerCase().split('.').pop();
+  const el=document.getElementById('player');
+  if(['mp4','webm','ogg'].includes(ext)) el.innerHTML=`<video src="${src}" controls width="720"></video>`;
+  else if(['mp3','wav','ogg'].includes(ext)) el.innerHTML=`<audio src="${src}" controls></audio>`;
+  else el.innerHTML=`<a href="${src}" target="_blank">Descargar ${name}</a>`;
+}
+async function refresh(){
+  const r=await fetch(`${API}/media`); const data=await r.json();
+  const ul=document.getElementById('list'); ul.innerHTML="";
+  (data.objects||[]).forEach(n=>{ const li=document.createElement('li'); li.textContent=n; li.onclick=()=>renderPlayer(n); ul.appendChild(li); });
+}
+document.getElementById('btnRefresh').onclick=refresh;
+document.getElementById('btnUpload').onclick=async ()=>{
+  const f=document.getElementById('file').files[0]; if(!f) return;
+  const fd=new FormData(); fd.append('file',f);
+  const r=await fetch(`${API}/upload`,{method:'POST',body:fd});
+  const data=await r.json(); document.getElementById('msg').textContent=data.ok?'Subido ✔':('Error: '+(data.detail||'')); refresh();
+};
+refresh();
+</script>
+</body></html>
