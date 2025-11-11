@@ -1,46 +1,362 @@
 <!doctype html><html lang="es"><head>
-<meta charset="utf-8"><title>Player demo</title>
-<style>body{font-family:system-ui;max-width:900px;margin:24px} .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap} .box{border:1px solid #ddd;border-radius:10px;padding:16px;margin:12px 0} li{cursor:pointer;margin:4px 0}</style>
+<meta charset="utf-8"><title>Sistema Multimedia Distribuido</title>
+<style>
+body{font-family:system-ui;max-width:1200px;margin:24px;background:#f5f5f5}
+h1{color:#333}
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.box{border:1px solid #ddd;border-radius:10px;padding:16px;margin:12px 0;background:white;box-shadow:0 2px 4px rgba(0,0,0,0.1)}
+li{cursor:pointer;margin:4px 0;padding:8px;border-radius:4px;transition:background 0.2s}
+li:hover{background:#e3f2fd}
+.file-item{display:flex;justify-content:space-between;align-items:center}
+.file-name{flex:1}
+.file-actions{display:flex;gap:8px}
+button{padding:8px 16px;border:none;border-radius:4px;cursor:pointer;background:#2196F3;color:white;font-size:14px}
+button:hover{background:#1976D2}
+button:disabled{background:#ccc;cursor:not-allowed}
+.btn-small{padding:4px 8px;font-size:12px}
+.btn-danger{background:#f44336}
+.btn-danger:hover{background:#d32f2f}
+.btn-success{background:#4CAF50}
+.btn-success:hover{background:#45a049}
+select{padding:8px;border:1px solid #ddd;border-radius:4px;font-size:14px}
+input[type="file"]{padding:8px}
+.status{padding:4px 8px;border-radius:4px;font-size:12px;font-weight:bold}
+.status-pending{background:#FFF9C4;color:#F57F17}
+.status-processing{background:#BBDEFB;color:#1565C0}
+.status-completed{background:#C8E6C9;color:#2E7D32}
+.status-failed{background:#FFCDD2;color:#C62828}
+.progress-bar{width:100%;height:20px;background:#e0e0e0;border-radius:10px;overflow:hidden;margin:8px 0}
+.progress-fill{height:100%;background:#2196F3;transition:width 0.3s}
+.job-item{border:1px solid #e0e0e0;padding:12px;margin:8px 0;border-radius:6px;background:#fafafa}
+.job-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.job-details{font-size:12px;color:#666}
+#queue-stats{display:flex;gap:16px;flex-wrap:wrap}
+.stat-card{flex:1;min-width:150px;padding:16px;background:#fff;border-radius:8px;border-left:4px solid #2196F3;box-shadow:0 1px 3px rgba(0,0,0,0.1)}
+.stat-value{font-size:32px;font-weight:bold;color:#2196F3}
+.stat-label{font-size:14px;color:#666;margin-top:4px}
+</style>
 </head><body>
-<h1>Sistema Multimedia – Demo</h1>
+<h1>🎬 Sistema Multimedia Distribuido</h1>
 
-<div class="box"><h3>Subir archivo</h3>
+<div class="box">
+  <h3>📤 Subir Archivo</h3>
   <div class="row">
-    <input id="file" type="file" />
+    <input id="file" type="file" accept="audio/*,video/*" />
     <button id="btnUpload">Subir</button>
     <span id="msg"></span>
   </div>
 </div>
 
-<div class="box"><h3>Archivos en MinIO</h3>
+<div class="box">
+  <h3>🎵 Archivos Multimedia</h3>
   <button id="btnRefresh">Actualizar lista</button>
   <ul id="list"></ul>
 </div>
 
-<div class="box"><h3>Reproductor</h3><div id="player"></div></div>
+<div class="box">
+  <h3>🔄 Conversión de Archivos</h3>
+  <div id="conversionForm">
+    <p>Selecciona un archivo de la lista para convertir</p>
+    <div id="convertOptions" style="display:none">
+      <p><strong>Archivo:</strong> <span id="selectedFile"></span></p>
+      <div class="row">
+        <label>Formato de salida:</label>
+        <select id="outputFormat">
+          <optgroup label="Audio">
+            <option value="mp3">MP3</option>
+            <option value="flac">FLAC</option>
+            <option value="wav">WAV</option>
+            <option value="aac">AAC</option>
+            <option value="ogg">OGG</option>
+          </optgroup>
+          <optgroup label="Video">
+            <option value="mp4">MP4</option>
+            <option value="avi">AVI</option>
+            <option value="mkv">MKV</option>
+            <option value="webm">WEBM</option>
+            <option value="mov">MOV</option>
+          </optgroup>
+        </select>
+        <button id="btnConvert">Convertir</button>
+        <button id="btnCancelConvert" class="btn-danger btn-small">Cancelar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="box">
+  <h3>📊 Estadísticas de Cola</h3>
+  <div id="queue-stats"></div>
+</div>
+
+<div class="box">
+  <h3>📋 Trabajos de Conversión</h3>
+  <div class="row">
+    <button id="btnRefreshJobs">Actualizar trabajos</button>
+    <select id="filterStatus">
+      <option value="">Todos</option>
+      <option value="pending">Pendientes</option>
+      <option value="processing">En proceso</option>
+      <option value="completed">Completados</option>
+      <option value="failed">Fallidos</option>
+    </select>
+  </div>
+  <div id="jobsList"></div>
+</div>
+
+<div class="box">
+  <h3>▶️ Reproductor</h3>
+  <div id="player"></div>
+</div>
 
 <script>
 const API="http://localhost:8000";
+let selectedFileForConversion = null;
+let autoRefreshInterval = null;
+
 function renderPlayer(name){
   const src=`${API}/media/${encodeURIComponent(name)}`;
   const ext=name.toLowerCase().split('.').pop();
   const el=document.getElementById('player');
-  if(['mp4','webm','ogg'].includes(ext)) el.innerHTML=`<video src="${src}" controls width="720"></video>`;
-  else if(['mp3','wav','ogg'].includes(ext)) el.innerHTML=`<audio src="${src}" controls></audio>`;
-  else el.innerHTML=`<a href="${src}" target="_blank">Descargar ${name}</a>`;
+  if(['mp4','webm','ogg','avi','mkv','mov'].includes(ext)) 
+    el.innerHTML=`<video src="${src}" controls width="100%" style="max-width:720px"></video>`;
+  else if(['mp3','wav','ogg','flac','aac','m4a'].includes(ext)) 
+    el.innerHTML=`<audio src="${src}" controls style="width:100%;max-width:720px"></audio>`;
+  else 
+    el.innerHTML=`<a href="${src}" target="_blank">Descargar ${name}</a>`;
 }
+
 async function refresh(){
-  const r=await fetch(`${API}/media`); const data=await r.json();
-  const ul=document.getElementById('list'); ul.innerHTML="";
-  (data.objects||[]).forEach(n=>{ const li=document.createElement('li'); li.textContent=n; li.onclick=()=>renderPlayer(n); ul.appendChild(li); });
+  const r=await fetch(`${API}/media`);
+  const data=await r.json();
+  const ul=document.getElementById('list');
+  ul.innerHTML="";
+  (data.objects||[]).forEach(n=>{
+    const li=document.createElement('li');
+    const div=document.createElement('div');
+    div.className='file-item';
+    
+    const nameSpan=document.createElement('span');
+    nameSpan.className='file-name';
+    nameSpan.textContent=n;
+    nameSpan.onclick=()=>renderPlayer(n);
+    
+    const actions=document.createElement('div');
+    actions.className='file-actions';
+    
+    const playBtn=document.createElement('button');
+    playBtn.textContent='▶️ Reproducir';
+    playBtn.className='btn-small btn-success';
+    playBtn.onclick=(e)=>{e.stopPropagation();renderPlayer(n)};
+    
+    const convertBtn=document.createElement('button');
+    convertBtn.textContent='🔄 Convertir';
+    convertBtn.className='btn-small';
+    convertBtn.onclick=(e)=>{e.stopPropagation();selectFileForConversion(n)};
+    
+    actions.appendChild(playBtn);
+    actions.appendChild(convertBtn);
+    div.appendChild(nameSpan);
+    div.appendChild(actions);
+    li.appendChild(div);
+    ul.appendChild(li);
+  });
 }
-document.getElementById('btnRefresh').onclick=refresh;
-document.getElementById('btnUpload').onclick=async ()=>{
-  const f=document.getElementById('file').files[0]; if(!f) return;
-  const fd=new FormData(); fd.append('file',f);
-  const r=await fetch(`${API}/upload`,{method:'POST',body:fd});
-  const data=await r.json(); document.getElementById('msg').textContent=data.ok?'Subido ✔':('Error: '+(data.detail||'')); refresh();
+
+function selectFileForConversion(filename){
+  selectedFileForConversion = filename;
+  document.getElementById('selectedFile').textContent = filename;
+  document.getElementById('convertOptions').style.display = 'block';
+}
+
+async function convertFile(){
+  if(!selectedFileForConversion) return;
+  
+  const format = document.getElementById('outputFormat').value;
+  const btn = document.getElementById('btnConvert');
+  btn.disabled = true;
+  btn.textContent = 'Convirtiendo...';
+  
+  try{
+    const r = await fetch(`${API}/convert`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        input_file: selectedFileForConversion,
+        output_format: format
+      })
+    });
+    const data = await r.json();
+    
+    if(data.ok){
+      alert(`✅ Conversión solicitada! Job ID: ${data.job_id}`);
+      document.getElementById('convertOptions').style.display = 'none';
+      selectedFileForConversion = null;
+      refreshJobs();
+      startAutoRefresh();
+    }else{
+      alert('❌ Error: ' + (data.detail || 'Error desconocido'));
+    }
+  }catch(e){
+    alert('❌ Error: ' + e.message);
+  }finally{
+    btn.disabled = false;
+    btn.textContent = 'Convertir';
+  }
+}
+
+async function refreshJobs(){
+  const status = document.getElementById('filterStatus').value;
+  const url = status ? `${API}/jobs?status=${status}` : `${API}/jobs`;
+  
+  const r = await fetch(url);
+  const data = await r.json();
+  
+  const container = document.getElementById('jobsList');
+  container.innerHTML = '';
+  
+  if(!data.jobs || data.jobs.length === 0){
+    container.innerHTML = '<p style="color:#999">No hay trabajos</p>';
+    return;
+  }
+  
+  data.jobs.forEach(job => {
+    const div = document.createElement('div');
+    div.className = 'job-item';
+    
+    const header = document.createElement('div');
+    header.className = 'job-header';
+    
+    const title = document.createElement('strong');
+    title.textContent = `${job.input_file} → ${job.output_format.toUpperCase()}`;
+    
+    const statusSpan = document.createElement('span');
+    statusSpan.className = `status status-${job.status}`;
+    statusSpan.textContent = job.status.toUpperCase();
+    
+    header.appendChild(title);
+    header.appendChild(statusSpan);
+    
+    const details = document.createElement('div');
+    details.className = 'job-details';
+    
+    let detailsHTML = `Job ID: ${job.job_id}<br>`;
+    if(job.worker_id) detailsHTML += `Worker: ${job.worker_id}<br>`;
+    if(job.duration_seconds) detailsHTML += `Duración: ${job.duration_seconds}s<br>`;
+    if(job.size_reduction_percent !== undefined) detailsHTML += `Reducción: ${job.size_reduction_percent}%<br>`;
+    if(job.error) detailsHTML += `<span style="color:red">Error: ${job.error}</span><br>`;
+    
+    details.innerHTML = detailsHTML;
+    
+    if(job.status === 'processing' && job.progress){
+      const progressBar = document.createElement('div');
+      progressBar.className = 'progress-bar';
+      const fill = document.createElement('div');
+      fill.className = 'progress-fill';
+      fill.style.width = `${job.progress}%`;
+      progressBar.appendChild(fill);
+      div.appendChild(progressBar);
+    }
+    
+    if(job.status === 'completed' && job.output_file){
+      const downloadBtn = document.createElement('button');
+      downloadBtn.textContent = '⬇️ Descargar';
+      downloadBtn.className = 'btn-small btn-success';
+      downloadBtn.onclick = () => renderPlayer(job.output_file);
+      details.appendChild(document.createElement('br'));
+      details.appendChild(downloadBtn);
+    }
+    
+    div.appendChild(header);
+    div.appendChild(details);
+    container.appendChild(div);
+  });
+}
+
+async function refreshQueueStats(){
+  const r = await fetch(`${API}/queue/stats`);
+  const data = await r.json();
+  
+  const container = document.getElementById('queue-stats');
+  container.innerHTML = `
+    <div class="stat-card">
+      <div class="stat-value">${data.queue_length}</div>
+      <div class="stat-label">En Cola</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">${data.stats.processing}</div>
+      <div class="stat-label">Procesando</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">${data.stats.completed}</div>
+      <div class="stat-label">Completados</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">${data.stats.failed}</div>
+      <div class="stat-label">Fallidos</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">${data.total_jobs}</div>
+      <div class="stat-label">Total</div>
+    </div>
+  `;
+}
+
+function startAutoRefresh(){
+  if(autoRefreshInterval) return;
+  autoRefreshInterval = setInterval(() => {
+    refreshJobs();
+    refreshQueueStats();
+  }, 3000);
+}
+
+function stopAutoRefresh(){
+  if(autoRefreshInterval){
+    clearInterval(autoRefreshInterval);
+    autoRefreshInterval = null;
+  }
+}
+
+document.getElementById('btnRefresh').onclick = refresh;
+document.getElementById('btnRefreshJobs').onclick = () => {
+  refreshJobs();
+  refreshQueueStats();
 };
+document.getElementById('filterStatus').onchange = refreshJobs;
+document.getElementById('btnConvert').onclick = convertFile;
+document.getElementById('btnCancelConvert').onclick = () => {
+  document.getElementById('convertOptions').style.display = 'none';
+  selectedFileForConversion = null;
+};
+
+document.getElementById('btnUpload').onclick = async ()=>{
+  const f=document.getElementById('file').files[0];
+  if(!f) return;
+  
+  const btn = document.getElementById('btnUpload');
+  btn.disabled = true;
+  btn.textContent = 'Subiendo...';
+  
+  const fd=new FormData();
+  fd.append('file',f);
+  
+  try{
+    const r=await fetch(`${API}/upload`,{method:'POST',body:fd});
+    const data=await r.json();
+    document.getElementById('msg').textContent=data.ok?'Subido ✅':('Error: '+(data.detail||''));
+    refresh();
+  }catch(e){
+    document.getElementById('msg').textContent='Error: '+e.message;
+  }finally{
+    btn.disabled = false;
+    btn.textContent = 'Subir';
+  }
+};
+
+// Inicializar
 refresh();
+refreshJobs();
+refreshQueueStats();
+startAutoRefresh();
 </script>
 </body></html>
