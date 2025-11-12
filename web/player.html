@@ -1,46 +1,242 @@
-<!doctype html><html lang="es"><head>
-<meta charset="utf-8"><title>Player demo</title>
-<style>body{font-family:system-ui;max-width:900px;margin:24px} .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap} .box{border:1px solid #ddd;border-radius:10px;padding:16px;margin:12px 0} li{cursor:pointer;margin:4px 0}</style>
-</head><body>
-<h1>Sistema Multimedia – Demo</h1>
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Sistema Multimedia – Demo</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:24px;max-width:900px}
+    .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    .box{border:1px solid #ddd;border-radius:10px;padding:16px;margin:12px 0}
+    ul{padding-left:18px} li{cursor:pointer;margin:4px 0}
+    #player > * { width: 720px; max-width: 100%; }
+    .muted{color:#666;font-size:14px}
+  </style>
+</head>
+<body>
+  <h1>Sistema Multimedia – Demo (con login)</h1>
 
-<div class="box"><h3>Subir archivo</h3>
-  <div class="row">
-    <input id="file" type="file" />
-    <button id="btnUpload">Subir</button>
-    <span id="msg"></span>
+  <div class="box">
+    <h3>Crear cuenta</h3>
+    <div class="row">
+      <input id="su" placeholder="usuario (3–32, letras/números/._-)" />
+      <input id="sp" type="password" placeholder="contraseña (≥8)" />
+      <input id="sp2" type="password" placeholder="confirmar contraseña" />
+      <button id="btnSignup">Crear cuenta</button>
+      <span id="signupMsg" class="muted"></span>
+    </div>
   </div>
-</div>
 
-<div class="box"><h3>Archivos en MinIO</h3>
-  <button id="btnRefresh">Actualizar lista</button>
-  <ul id="list"></ul>
-</div>
+  <div class="box">
+    <h3>Login</h3>
+    <div class="row">
+      <input id="u" placeholder="usuario (alice/bob)">
+      <input id="p" placeholder="clave (alice123/bob123)" type="password">
+      <button id="btnLogin">Entrar</button>
+      <span id="authMsg" class="muted"></span>
+    </div>
+  </div>
 
-<div class="box"><h3>Reproductor</h3><div id="player"></div></div>
+  <div class="box">
+    <h3>Subir archivo</h3>
+    <div class="row">
+      <input id="file" type="file" />
+      <button id="btnUpload">Subir</button>
+      <span id="msg" class="muted"></span>
+    </div>
+    <div class="muted">Recuerda: ahora se guarda bajo <b>tu usuario</b> en MinIO (p. ej. <code>alice/tema.mp3</code>).</div>
+  </div>
+
+  <div class="box">
+    <h3>Archivos de mi cuenta</h3>
+    <div class="row">
+      <button id="btnRefresh">Actualizar lista</button>
+      <span class="muted">Haz clic en un nombre para reproducir</span>
+    </div>
+    <ul id="list"></ul>
+  </div>
+
+  <div class="box">
+    <h3>Reproductor</h3>
+    <div id="player" class="muted">Sin selección</div>
+  </div>
 
 <script>
-const API="http://localhost:8000";
-function renderPlayer(name){
-  const src=`${API}/media/${encodeURIComponent(name)}`;
-  const ext=name.toLowerCase().split('.').pop();
-  const el=document.getElementById('player');
-  if(['mp4','webm','ogg'].includes(ext)) el.innerHTML=`<video src="${src}" controls width="720"></video>`;
-  else if(['mp3','wav','ogg'].includes(ext)) el.innerHTML=`<audio src="${src}" controls></audio>`;
-  else el.innerHTML=`<a href="${src}" target="_blank">Descargar ${name}</a>`;
+const API = "http://127.0.0.1:8000"; // tu API
+let TOKEN = null;
+
+function requireAuth(){
+  if(!TOKEN){
+    document.getElementById('authMsg').textContent = "Inicia sesión primero.";
+    return false;
+  }
+  return true;
 }
-async function refresh(){
-  const r=await fetch(`${API}/media`); const data=await r.json();
-  const ul=document.getElementById('list'); ul.innerHTML="";
-  (data.objects||[]).forEach(n=>{ const li=document.createElement('li'); li.textContent=n; li.onclick=()=>renderPlayer(n); ul.appendChild(li); });
-}
-document.getElementById('btnRefresh').onclick=refresh;
-document.getElementById('btnUpload').onclick=async ()=>{
-  const f=document.getElementById('file').files[0]; if(!f) return;
-  const fd=new FormData(); fd.append('file',f);
-  const r=await fetch(`${API}/upload`,{method:'POST',body:fd});
-  const data=await r.json(); document.getElementById('msg').textContent=data.ok?'Subido ✔':('Error: '+(data.detail||'')); refresh();
+
+// Signup con auto-login
+document.getElementById('btnSignup').onclick = async () => {
+  const u  = document.getElementById('su').value.trim();
+  const p  = document.getElementById('sp').value;
+  const p2 = document.getElementById('sp2').value;
+  const msg = (t) => document.getElementById('signupMsg').textContent = t;
+
+  const reUser = /^[a-zA-Z0-9_.-]{3,32}$/;
+  if (!reUser.test(u)) { msg('Usuario inválido.'); return; }
+  if (p.length < 8)     { msg('La contraseña debe tener ≥ 8.'); return; }
+  if (p !== p2)         { msg('Las contraseñas no coinciden.'); return; }
+
+  try {
+    const r = await fetch(`${API}/auth/signup`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ username: u, password: p })
+    });
+    const data = await r.json();
+
+    if (!r.ok) { msg(data.detail || 'No se pudo crear la cuenta.'); return; }
+
+    // auto-login con el token devuelto
+    if (data.access_token) {
+      TOKEN = data.access_token;
+      document.getElementById('authMsg').textContent = 'Sesión iniciada ✔';
+      // opcional: rellena el login con el nuevo usuario
+      document.getElementById('u').value = u;
+      document.getElementById('p').value = '';
+      msg('Cuenta creada ✔');
+      await refresh();
+    } else {
+      msg('Cuenta creada, pero no llegó token.');
+    }
+  } catch {
+    msg('Error de red.');
+  }
 };
-refresh();
+
+document.getElementById('btnLogin').onclick = async () => {
+  const u = document.getElementById('u').value.trim();
+  const p = document.getElementById('p').value.trim();
+  if(!u || !p){ document.getElementById('authMsg').textContent="Ingresa usuario y clave"; return; }
+  const body = new URLSearchParams({username:u, password:p, grant_type:"password"});
+  const r = await fetch(`${API}/auth/login`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/x-www-form-urlencoded'},
+    body
+  });
+  const data = await r.json();
+  if(data.access_token){
+    TOKEN = data.access_token;
+    document.getElementById('authMsg').textContent = "Sesión iniciada ✔";
+    refresh();
+  }else{
+    document.getElementById('authMsg').textContent = "Error de login";
+  }
+};
+
+async function api(path, opts={}){
+  opts.headers = Object.assign({'Authorization': `Bearer ${TOKEN}`}, opts.headers||{});
+  const res = await fetch(`${API}${path}`, opts);
+  if(res.status === 401){
+    document.getElementById('authMsg').textContent = "Token inválido o vencido. Vuelve a iniciar sesión.";
+    TOKEN = null;
+    throw new Error('401');
+  }
+  return res;
+}
+
+async function refresh(){
+  if (!requireAuth()) return;
+
+  const r = await api('/media');
+  const data = await r.json();
+
+  const ul = document.getElementById('list');
+  ul.innerHTML = '';
+
+  const files = Array.isArray(data.objects) ? data.objects.slice().sort((a,b)=>a.localeCompare(b)) : [];
+  if (files.length === 0){
+    const li = document.createElement('li');
+    li.className = 'muted';
+    li.textContent = 'No hay archivos. Sube uno arriba.';
+    ul.appendChild(li);
+    return;
+  }
+
+  for (const name of files){
+    const li = document.createElement('li');
+
+    // título clickeable para reproducir
+    const title = document.createElement('span');
+    title.textContent = name;
+    title.style.textDecoration = 'underline';
+    title.style.cursor = 'pointer';
+    title.onclick = () => renderPlayer(name);
+
+    // botón Compartir
+    const btnShare = document.createElement('button');
+    btnShare.textContent = 'Compartir';
+    btnShare.onclick = () => share(name);
+
+    // botón Borrar
+    const btnDel = document.createElement('button');
+    btnDel.textContent = 'Borrar';
+    btnDel.onclick = () => removeFile(name);
+
+    li.appendChild(title);
+    li.appendChild(document.createTextNode(' '));
+    li.appendChild(btnShare);
+    li.appendChild(document.createTextNode(' '));
+    li.appendChild(btnDel);
+    ul.appendChild(li);
+  }
+}
+
+async function renderPlayer(name){
+  if(!requireAuth()) return;
+  document.getElementById('player').textContent = "Cargando…";
+  // Descarga con Authorization y crea un Blob URL (para poder usar <audio>/<video>)
+  const r = await api(`/media/${encodeURIComponent(name)}`);
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const ext = name.toLowerCase().split('.').pop();
+  const el = document.getElementById('player');
+  if(['mp4','webm','ogg'].includes(ext)){
+    el.innerHTML = `<video controls src="${url}"></video>`;
+  }else if(['mp3','wav','ogg'].includes(ext)){
+    el.innerHTML = `<audio controls src="${url}"></audio>`;
+  }else{
+    el.innerHTML = `<a href="${url}" download="${name}">Descargar ${name}</a>`;
+  }
+}
+
+async function share(name){
+  if(!requireAuth()) return;
+  const r = await api(`/share/${encodeURIComponent(name)}`, {method:'POST'});
+  const data = await r.json();
+  if(data.url){
+    await navigator.clipboard.writeText(data.url);
+    alert('Link copiado al portapapeles (válido 60 min).');
+  }
+}
+
+async function removeFile(name){
+  if(!requireAuth()) return;
+  if(!confirm(`¿Borrar "${name}"?`)) return;
+  const r = await api(`/media/${encodeURIComponent(name)}`, {method:'DELETE'});
+  const data = await r.json();
+  if(data.ok){ refresh(); }
+}
+
+document.getElementById('btnRefresh').onclick = refresh;
+
+document.getElementById('btnUpload').onclick = async () => {
+  if(!requireAuth()) return;
+  const f = document.getElementById('file').files[0];
+  if(!f){ return; }
+  const fd = new FormData(); fd.append('file', f);
+  const r = await api('/upload',{method:'POST', body: fd});
+  const data = await r.json();
+  document.getElementById('msg').textContent = data.ok ? 'Subido ✔' : ('Error: '+(data.detail||'')); 
+  refresh();
+};
 </script>
-</body></html>
+</body>
+</html>
