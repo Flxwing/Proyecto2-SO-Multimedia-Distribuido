@@ -1,45 +1,97 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
-from prometheus_client import Counter, Gauge, generate_latest, CONTENT_TYPE_LATEST
-from minio import Minio
-import os, mimetypes, urllib.parse
-from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from pydantic import BaseModel
+
+from prometheus_client import Counter, Gauge, generate_latest, CONTENT_TYPE_LATEST
+
+from minio import Minio
+from minio.error import S3Error
+import urllib.parse, mimetypes
+import os, json, time, re, secrets, traceback
+from datetime import datetime, timedelta
+
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from datetime import datetime, timedelta
-from minio.error import S3Error
-import re
-from pydantic import BaseModel
-import redis, time
+import redis
 
+# =========================
+# App + CORS
+# =========================
 app = FastAPI(title="Multimedia API")
 
-# --- Redis client ---
+ALLOWED_ORIGINS = [
+    "http://127.0.0.1:5500",
+    "http://localhost:5500",
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=False,
+    expose_headers=["*"],
+)
+
+# =========================
+# Util: normalizar endpoint de MinIO
+# =========================
+def _norm_endpoint(raw: str, default_scheme="http"):
+    raw = (raw or "").strip().strip('"').strip("'")
+    if "://" not in raw:
+        raw = f"{default_scheme}://{raw}"
+    p = urllib.parse.urlparse(raw)
+    host = p.netloc or p.path
+    secure = (p.scheme == "https")
+    return host, secure
+
+# =========================
+# MinIO (solo cliente interno)
+# =========================
+MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER", "admin")
+MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD", "admin12345")
+BUCKET          = os.getenv("MINIO_BUCKET", "media")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+
+MINIO_HOST, MINIO_SECURE = _norm_endpoint(os.getenv("MINIO_ENDPOINT", "http://minio:9000"))
+minio = Minio(
+    MINIO_HOST,
+    access_key=MINIO_ACCESS_KEY,
+    secret_key=MINIO_SECRET_KEY,
+    secure=MINIO_SECURE,
+)
+
+# =========================
+# Redis
+# =========================
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-# decode_responses=False -> redis devuelve bytes (tu código ya hace .decode())
+# decode_responses=False -> guardamos/recuperamos bytes
 r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=False)
 
-REQUESTS = Counter("api_requests_total", "Total de requests")
-ACTIVE_SESSIONS = Gauge("active_sessions", "Sesiones activas")
-API_UPLOADS        = Counter("api_uploads_total",        "Total de subidas exitosas")
-API_STREAMS        = Counter("api_streams_total",        "Total de streams exitosos")
-API_LOGINS         = Counter("api_logins_total",         "Logins exitosos")
+# =========================
+# Métricas Prometheus
+# =========================
+REQUESTS          = Counter("api_requests_total", "Total de requests")
+ACTIVE_SESSIONS   = Gauge("active_sessions", "Sesiones activas")
+API_UPLOADS       = Counter("api_uploads_total", "Total de subidas exitosas")
+API_STREAMS       = Counter("api_streams_total", "Total de streams exitosos")
+API_LOGINS        = Counter("api_logins_total", "Logins exitosos")
 API_DELETES       = Counter("api_deletes_total", "Borrados exitosos")
-API_JOBS_ENQUEUED  = Counter("api_jobs_enqueued_total",  "Jobs de conversión encolados")   # si usan conversión
-QUEUE_LEN          = Gauge  ("redis_media_jobs_len",     "Items en cola media_jobs")       # si usan conversión
+API_JOBS_ENQUEUED = Counter("api_jobs_enqueued_total", "Jobs de conversión encolados")
+QUEUE_LEN         = Gauge  ("redis_media_jobs_len", "Items en cola media_jobs")
 
-# ==== AUTH (demo) ====
+# =========================
+# Auth (demo con Redis)
+# =========================
 SECRET_KEY = "cambia_esto_por_un_valor_secreto_largo"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
-pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+pwd_context   = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
-
-USERNAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{3,32}$")
+USERNAME_RE   = re.compile(r"^[a-zA-Z0-9_.-]{3,32}$")
 
 def user_key(u: str) -> str:
     return f"user:{u}"
@@ -71,14 +123,14 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     cred_exc = HTTPException(status_code=401, detail="Invalid credentials",
                              headers={"WWW-Authenticate": "Bearer"})
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
+        payload  = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
         if not username or not user_exists(username):
             raise cred_exc
         return {"username": username}
     except JWTError:
         raise cred_exc
-    
+
 class SignupReq(BaseModel):
     username: str
     password: str
@@ -91,9 +143,7 @@ def wait_for_redis():
             return
         except Exception:
             time.sleep(1)
-    # Si no responde en ~30s, fallamos el arranque (opcional)
     raise RuntimeError("Redis no disponible")
-
 
 @app.post("/auth/signup")
 def signup(req: SignupReq):
@@ -118,29 +168,17 @@ async def login(form: OAuth2PasswordRequestForm = Depends()):
     token = create_access_token({"sub": form.username})
     return {"access_token": token, "token_type": "bearer"}
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-endpoint_url = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
-parsed = urllib.parse.urlparse(endpoint_url)
-endpoint = parsed.netloc or parsed.path
-secure = parsed.scheme == "https"
-
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "admin")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "admin12345")
-BUCKET = os.getenv("MINIO_BUCKET", "media")
-
-minio = Minio(endpoint, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=secure)
-
+# =========================
+# Bucket
+# =========================
 @app.on_event("startup")
 def ensure_bucket():
     if not minio.bucket_exists(BUCKET):
         minio.make_bucket(BUCKET)
 
+# =========================
+# Health / Metrics
+# =========================
 @app.get("/health")
 def health():
     REQUESTS.inc()
@@ -150,6 +188,9 @@ def health():
 def metrics():
     return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
+# =========================
+# Mis archivos
+# =========================
 @app.get("/media")
 def list_media(user: dict = Depends(get_current_user)):
     prefix = f"{user['username']}/"
@@ -159,7 +200,6 @@ def list_media(user: dict = Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Stream de MI archivo
 @app.get("/media/{name}")
 def stream_media(name: str, user: dict = Depends(get_current_user)):
     object_name = f"{user['username']}/{name}"
@@ -180,10 +220,9 @@ def stream_media(name: str, user: dict = Depends(get_current_user)):
         finally:
             resp.close(); resp.release_conn()
 
-    API_STREAMS.inc()  # <-- aquí
+    API_STREAMS.inc()
     return StreamingResponse(it(), media_type=mime)
 
-# Subir a MI carpeta
 @app.post("/upload")
 def upload_media(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
     object_name = f"{user['username']}/{file.filename}"
@@ -193,27 +232,105 @@ def upload_media(file: UploadFile = File(...), user: dict = Depends(get_current_
             length=-1, part_size=10*1024*1024,
             content_type=file.content_type or "application/octet-stream",
         )
-        API_UPLOADS.inc()  # <-- aquí (solo si no hubo excepción)
+        API_UPLOADS.inc()
         return {"ok": True, "name": file.filename}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
-@app.post("/share/{name}")
-def share(name: str, minutes: int = 60, user: dict = Depends(get_current_user)):
-    object_name = f"{user['username']}/{name}"
-    try:
-        url = minio.presigned_get_object(BUCKET, object_name, expires=timedelta(minutes=minutes))
-        return {"url": url, "expires_in_min": minutes}
-    except S3Error as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    
-# DELETE /media/{name} — quita API_STREAMS.inc() y usa API_DELETES.inc()
+
 @app.delete("/media/{name}")
 def delete_media(name: str, user: dict = Depends(get_current_user)):
     object_name = f"{user['username']}/{name}"
     try:
         minio.remove_object(BUCKET, object_name)
-        API_DELETES.inc()   # <-- métrica correcta para borrado
+        API_DELETES.inc()
         return {"ok": True}
     except S3Error as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+# =========================
+# Compartir por token (Opción 3)
+# =========================
+# Clave en Redis: share:<token> -> JSON { "object": "...", "filename": "...", "mime": "..."}
+SHARE_PREFIX = "share:"
+
+def _share_key(tok: str) -> str:
+    return f"{SHARE_PREFIX}{tok}"
+
+@app.post("/share/{name}")
+def share_create(name: str, minutes: int = 60, user: dict = Depends(get_current_user), request: Request = None):
+    """
+    Crea un token temporal para compartir <name>.
+    Devuelve una URL pública en esta API: /s/<token>
+    """
+    REQUESTS.inc()
+    object_name = f"{user['username']}/{name}"
+
+    # 1) Verifica que exista
+    try:
+        minio.stat_object(BUCKET, object_name)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"not_found: {object_name}")
+
+    # 2) Guarda token en Redis con TTL
+    ttl = max(60, min(60 * minutes, 60 * 60 * 24 * 7))  # entre 1 min y 7 días
+    token = secrets.token_urlsafe(24)
+
+    mime, _ = mimetypes.guess_type(name)
+    if mime is None: mime = "application/octet-stream"
+
+    payload = {"object": object_name, "filename": name, "mime": mime}
+    r.setex(_share_key(token), ttl, json.dumps(payload).encode())
+
+    # 3) Link absoluto usando la base de la solicitud
+    if PUBLIC_BASE_URL:
+        base = PUBLIC_BASE_URL
+    else:
+        # Soporta reverse proxies (ngrok/Nginx) si no usas PUBLIC_BASE_URL
+        scheme = request.headers.get("X-Forwarded-Proto", request.url.scheme)
+        host = request.headers.get("X-Forwarded-Host") or request.headers.get("host")
+        base = f"{scheme}://{host}".rstrip("/")
+
+    url = f"{base}/s/{token}"
+    return {"url": url, "expires_in_min": ttl // 60}
+
+@app.get("/s/{token}")
+def share_resolve(token: str):
+    """
+    Público. No requiere auth.
+    Lee token en Redis y **sirve** el archivo desde MinIO (proxy).
+    Así no exponemos MinIO ni su dominio/puerto.
+    """
+    data = r.get(_share_key(token))
+    if not data:
+        raise HTTPException(status_code=404, detail="invalid_or_expired_token")
+
+    try:
+        meta = json.loads(data.decode())
+        object_name = meta["object"]
+        filename    = meta.get("filename", "file")
+        mime        = meta.get("mime", "application/octet-stream")
+    except Exception:
+        raise HTTPException(status_code=500, detail="bad_token_payload")
+
+    try:
+        resp = minio.get_object(BUCKET, object_name)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"not_found: {object_name}")
+
+    headers = {
+        "Content-Type": mime,
+        "Content-Disposition": f'inline; filename="{filename}"',
+        # Permitir que <audio>/<video> en otros orígenes lo consuman sin lío
+        "Access-Control-Allow-Origin": "*",
+    }
+
+    def it():
+        try:
+            while True:
+                chunk = resp.read(1024 * 1024)
+                if not chunk: break
+                yield chunk
+        finally:
+            resp.close(); resp.release_conn()
+
+    return StreamingResponse(it(), headers=headers, media_type=mime)
