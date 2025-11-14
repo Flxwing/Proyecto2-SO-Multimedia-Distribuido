@@ -35,6 +35,7 @@ redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 # Redis keys
 JOBS_QUEUE = "conversion:queue"
 JOBS_STATUS_PREFIX = "job:status:"
+WORKER_QUEUE = f"conversion:queue:{WORKER_ID}"  # Cola específica del worker
 
 def update_job_status(job_id, updates):
     """Actualizar estado del job en Redis"""
@@ -265,6 +266,7 @@ def update_system_metrics():
 def main():
     print(f"[{WORKER_ID}] Iniciando worker...")
     print(f"[{WORKER_ID}] Métricas en puerto {METRICS_PORT}")
+    print(f"[{WORKER_ID}] Cola específica: {WORKER_QUEUE}")
     
     # Iniciar servidor de métricas
     start_http_server(METRICS_PORT)
@@ -276,11 +278,21 @@ def main():
             # Actualizar métricas del sistema
             update_system_metrics()
             
-            # Esperar por trabajos (bloqueante con timeout)
+            # Prioridad 1: Verificar cola específica del worker (trabajos asignados)
+            result = redis_client.blpop(WORKER_QUEUE, timeout=1)
+            
+            if result:
+                _, job_id = result
+                print(f"[{WORKER_ID}] ⭐ Trabajo ASIGNADO recibido: {job_id}")
+                process_job(job_id)
+                continue
+            
+            # Prioridad 2: Verificar cola general (si no hay trabajos asignados)
             result = redis_client.blpop(JOBS_QUEUE, timeout=5)
             
             if result:
                 _, job_id = result
+                print(f"[{WORKER_ID}] 📋 Trabajo de cola GENERAL recibido: {job_id}")
                 process_job(job_id)
             
         except KeyboardInterrupt:

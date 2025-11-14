@@ -241,10 +241,11 @@ async function refreshJobs(){
     details.className = 'job-details';
     
     let detailsHTML = `Job ID: ${job.job_id}<br>`;
-    if(job.worker_id) detailsHTML += `Worker: ${job.worker_id}<br>`;
-    if(job.duration_seconds) detailsHTML += `Duración: ${job.duration_seconds}s<br>`;
-    if(job.size_reduction_percent !== undefined) detailsHTML += `Reducción: ${job.size_reduction_percent}%<br>`;
-    if(job.error) detailsHTML += `<span style="color:red">Error: ${job.error}</span><br>`;
+    if(job.assigned_worker) detailsHTML += `🎯 Asignado a: <strong>${job.assigned_worker}</strong><br>`;
+    if(job.worker_id) detailsHTML += `⚙️ Procesado por: <strong>${job.worker_id}</strong><br>`;
+    if(job.duration_seconds) detailsHTML += `⏱️ Duración: ${job.duration_seconds}s<br>`;
+    if(job.size_reduction_percent !== undefined) detailsHTML += `📊 Reducción: ${job.size_reduction_percent}%<br>`;
+    if(job.error) detailsHTML += `<span style="color:red">❌ Error: ${job.error}</span><br>`;
     
     details.innerHTML = detailsHTML;
     

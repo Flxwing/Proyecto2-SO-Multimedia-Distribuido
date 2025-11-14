@@ -1,12 +1,13 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import Counter, Gauge, generate_latest, CONTENT_TYPE_LATEST
 from minio import Minio
 from pydantic import BaseModel
-import os, mimetypes, urllib.parse, json, redis, uuid
+import os, mimetypes, urllib.parse, json, redis, uuid, httpx
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 app = FastAPI(title="Multimedia API")
 
@@ -60,10 +61,99 @@ redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 JOBS_QUEUE = "conversion:queue"
 JOBS_STATUS_PREFIX = "job:status:"
 
+# Prometheus configuration
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus:9090")
+
+# Worker configuration
+WORKERS = [
+    {"id": "worker_a", "host": "worker_a", "metrics_port": 9101},
+    {"id": "worker_b", "host": "worker_b", "metrics_port": 9102},
+]
+
+async def get_worker_metrics(worker_id: str, metric_name: str) -> Optional[float]:
+    """Obtener métrica de un worker desde Prometheus"""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            query = f'{metric_name}{{job=~"workers.*"}}'
+            response = await client.get(
+                f"{PROMETHEUS_URL}/api/v1/query",
+                params={"query": query}
+            )
+            data = response.json()
+            
+            if data.get("status") == "success":
+                results = data.get("data", {}).get("result", [])
+                for result in results:
+                    # Buscar el worker específico por su puerto de métricas
+                    instance = result.get("metric", {}).get("instance", "")
+                    if worker_id in instance or str(WORKERS[0 if worker_id == "worker_a" else 1]["metrics_port"]) in instance:
+                        return float(result.get("value", [None, 0])[1])
+            return None
+    except Exception as e:
+        print(f"Error obteniendo métrica {metric_name} de {worker_id}: {e}")
+        return None
+
+async def get_worker_stats(worker_id: str) -> Dict:
+    """Obtener estadísticas completas de un worker"""
+    cpu_load = await get_worker_metrics(worker_id, "worker_cpu_load")
+    memory_usage = await get_worker_metrics(worker_id, "worker_memory_usage_mb")
+    jobs_in_progress = await get_worker_metrics(worker_id, "worker_jobs_in_progress")
+    
+    # Obtener conversiones completadas
+    conversions_success = await get_worker_metrics(worker_id, 'worker_conversions_done_total{status="success"}')
+    conversions_failed = await get_worker_metrics(worker_id, 'worker_conversions_done_total{status="failed"}')
+    
+    return {
+        "worker_id": worker_id,
+        "cpu_load": cpu_load if cpu_load is not None else 0.0,
+        "memory_mb": memory_usage if memory_usage is not None else 0.0,
+        "jobs_in_progress": int(jobs_in_progress) if jobs_in_progress is not None else 0,
+        "conversions_success": int(conversions_success) if conversions_success is not None else 0,
+        "conversions_failed": int(conversions_failed) if conversions_failed is not None else 0,
+        "available": True,  # TODO: Implementar health check real
+    }
+
+async def select_best_worker() -> str:
+    """Seleccionar el worker con menor carga para asignar trabajo"""
+    workers_stats = []
+    
+    for worker in WORKERS:
+        stats = await get_worker_stats(worker["id"])
+        workers_stats.append(stats)
+    
+    # Ordenar por carga (prioridad: jobs en progreso, luego CPU)
+    # Worker con menos jobs y menor CPU es el mejor
+    best_worker = min(
+        workers_stats,
+        key=lambda w: (w["jobs_in_progress"], w["cpu_load"])
+    )
+    
+    print(f"[BALANCEO] Seleccionado {best_worker['worker_id']} (jobs: {best_worker['jobs_in_progress']}, CPU: {best_worker['cpu_load']:.2f})")
+    
+    return best_worker["worker_id"]
+
 @app.on_event("startup")
 def ensure_bucket():
     if not minio.bucket_exists(BUCKET):
         minio.make_bucket(BUCKET)
+
+# Montar archivos estáticos (HTML)
+app.mount("/static", StaticFiles(directory="/app/web"), name="static")
+
+@app.get("/")
+def root():
+    """Redirigir a player.html"""
+    return FileResponse("/app/web/player.html")
+
+@app.get("/admin.html")
+def admin():
+    """Servir dashboard de monitoreo"""
+    return FileResponse("/app/web/admin.html")
+
+@app.get("/player.html")
+def player():
+    """Servir interfaz de usuario"""
+    return FileResponse("/app/web/player.html")
 
 @app.get("/health")
 def health():
@@ -113,8 +203,8 @@ def upload_media(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/convert")
-def request_conversion(req: ConversionRequest):
-    """Solicitar conversión de archivo multimedia"""
+async def request_conversion(req: ConversionRequest):
+    """Solicitar conversión de archivo multimedia con balanceo de carga inteligente"""
     CONVERSION_REQUESTS.inc()
     
     # Verificar que el archivo existe en MinIO
@@ -132,6 +222,9 @@ def request_conversion(req: ConversionRequest):
     if output_fmt not in valid_formats:
         raise HTTPException(status_code=400, detail=f"Formato no soportado: {output_fmt}")
     
+    # Seleccionar el mejor worker según carga actual
+    assigned_worker = await select_best_worker()
+    
     # Crear job
     job_id = str(uuid.uuid4())
     job_data = {
@@ -141,17 +234,28 @@ def request_conversion(req: ConversionRequest):
         "output_format": output_fmt,
         "options": req.options or {},
         "created_at": datetime.utcnow().isoformat(),
-        "progress": 0
+        "progress": 0,
+        "assigned_worker": assigned_worker,  # Nuevo: worker asignado
     }
     
     # Guardar estado del job
     redis_client.set(f"{JOBS_STATUS_PREFIX}{job_id}", json.dumps(job_data))
     
-    # Encolar job
+    # Encolar job en cola específica del worker
+    worker_queue = f"conversion:queue:{assigned_worker}"
+    redis_client.rpush(worker_queue, job_id)
+    
+    # También en cola general (fallback)
     redis_client.rpush(JOBS_QUEUE, job_id)
+    
     JOBS_ENQUEUED.inc()
     
-    return {"ok": True, "job_id": job_id, "status": "pending"}
+    return {
+        "ok": True, 
+        "job_id": job_id, 
+        "status": "pending",
+        "assigned_worker": assigned_worker
+    }
 
 @app.get("/jobs/{job_id}")
 def get_job_status(job_id: str):
@@ -202,4 +306,44 @@ def queue_stats():
         "queue_length": queue_length,
         "stats": stats,
         "total_jobs": len(keys)
+    }
+
+@app.get("/workers/stats")
+async def workers_stats():
+    """Estadísticas de todos los workers para dashboard de monitoreo"""
+    workers_data = []
+    
+    for worker in WORKERS:
+        stats = await get_worker_stats(worker["id"])
+        
+        # Agregar información adicional
+        stats["host"] = worker["host"]
+        stats["metrics_port"] = worker["metrics_port"]
+        
+        # Calcular score de carga (0-100, donde 100 es completamente ocupado)
+        load_score = min(100, int(
+            (stats["jobs_in_progress"] * 30) +  # 30 puntos por job
+            (stats["cpu_load"] * 50)            # 50 puntos por CPU completo
+        ))
+        stats["load_score"] = load_score
+        stats["status"] = "busy" if load_score > 60 else "available" if load_score > 30 else "idle"
+        
+        workers_data.append(stats)
+    
+    # Estadísticas generales
+    total_jobs = sum(w["jobs_in_progress"] for w in workers_data)
+    avg_cpu = sum(w["cpu_load"] for w in workers_data) / len(workers_data) if workers_data else 0
+    total_success = sum(w["conversions_success"] for w in workers_data)
+    total_failed = sum(w["conversions_failed"] for w in workers_data)
+    
+    return {
+        "workers": workers_data,
+        "summary": {
+            "total_workers": len(workers_data),
+            "active_workers": sum(1 for w in workers_data if w["available"]),
+            "total_jobs_processing": total_jobs,
+            "average_cpu_load": round(avg_cpu, 2),
+            "total_conversions_success": total_success,
+            "total_conversions_failed": total_failed,
+        }
     }
