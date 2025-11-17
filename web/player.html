@@ -1,242 +1,1012 @@
-<!doctype html>
-<html lang="es">
-<head>
-  <meta charset="utf-8" />
-  <title>Sistema Multimedia – Demo</title>
-  <style>
-    body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:24px;max-width:900px}
-    .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-    .box{border:1px solid #ddd;border-radius:10px;padding:16px;margin:12px 0}
-    ul{padding-left:18px} li{cursor:pointer;margin:4px 0}
-    #player > * { width: 720px; max-width: 100%; }
-    .muted{color:#666;font-size:14px}
-  </style>
-</head>
-<body>
-  <h1>Sistema Multimedia – Demo (con login)</h1>
-
-  <div class="box">
-    <h3>Crear cuenta</h3>
-    <div class="row">
-      <input id="su" placeholder="usuario (3–32, letras/números/._-)" />
-      <input id="sp" type="password" placeholder="contraseña (≥8)" />
-      <input id="sp2" type="password" placeholder="confirmar contraseña" />
-      <button id="btnSignup">Crear cuenta</button>
-      <span id="signupMsg" class="muted"></span>
-    </div>
-  </div>
-
-  <div class="box">
-    <h3>Login</h3>
-    <div class="row">
-      <input id="u" placeholder="usuario (alice/bob)">
-      <input id="p" placeholder="clave (alice123/bob123)" type="password">
-      <button id="btnLogin">Entrar</button>
-      <span id="authMsg" class="muted"></span>
-    </div>
-  </div>
-
-  <div class="box">
-    <h3>Subir archivo</h3>
-    <div class="row">
-      <input id="file" type="file" />
-      <button id="btnUpload">Subir</button>
-      <span id="msg" class="muted"></span>
-    </div>
-    <div class="muted">Recuerda: ahora se guarda bajo <b>tu usuario</b> en MinIO (p. ej. <code>alice/tema.mp3</code>).</div>
-  </div>
-
-  <div class="box">
-    <h3>Archivos de mi cuenta</h3>
-    <div class="row">
-      <button id="btnRefresh">Actualizar lista</button>
-      <span class="muted">Haz clic en un nombre para reproducir</span>
-    </div>
-    <ul id="list"></ul>
-  </div>
-
-  <div class="box">
-    <h3>Reproductor</h3>
-    <div id="player" class="muted">Sin selección</div>
-  </div>
-
-<script>
-const API = "http://127.0.0.1:8000"; // tu API
-let TOKEN = null;
-
-function requireAuth(){
-  if(!TOKEN){
-    document.getElementById('authMsg').textContent = "Inicia sesión primero.";
-    return false;
-  }
-  return true;
+<!doctype html><html lang="es"><head>
+<meta charset="utf-8"><title>Sistema Multimedia Distribuido</title>
+<style>
+:root {
+  --primary:#667eea;
+  --primary-dark:#4c5dd6;
+  --accent:#764ba2;
+  --success:#2e7d32;
+  --bg:#f7f5ff;
+  --card-bg:#ffffff;
+  --text:#2d2d2d;
 }
 
-// Signup con auto-login
-document.getElementById('btnSignup').onclick = async () => {
-  const u  = document.getElementById('su').value.trim();
-  const p  = document.getElementById('sp').value;
-  const p2 = document.getElementById('sp2').value;
-  const msg = (t) => document.getElementById('signupMsg').textContent = t;
+body{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;
+  margin:0;
+  padding:30px;
+  background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+  color:var(--text);
+  min-height:100vh;
+}
 
-  const reUser = /^[a-zA-Z0-9_.-]{3,32}$/;
-  if (!reUser.test(u)) { msg('Usuario inválido.'); return; }
-  if (p.length < 8)     { msg('La contraseña debe tener ≥ 8.'); return; }
-  if (p !== p2)         { msg('Las contraseñas no coinciden.'); return; }
+h1{
+  color:#fff;
+  font-size:2.4rem;
+  margin-bottom:8px;
+  text-align:center;
+  text-shadow:0 10px 30px rgba(0,0,0,0.25);
+}
 
+.subtitle{
+  color:#f0e9ff;
+  text-align:center;
+  margin-bottom:30px;
+  font-size:1.05rem;
+}
+
+.container{
+  max-width:1300px;
+  margin:0 auto;
+}
+
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+
+.section-grid{
+  display:grid;
+  gap:20px;
+  margin-bottom:20px;
+}
+
+.two-columns{grid-template-columns:repeat(auto-fit,minmax(300px,1fr));}
+
+.section-stack{
+  display:flex;
+  flex-direction:column;
+  gap:20px;
+  margin-bottom:20px;
+}
+
+.hidden{display:none!important;}
+
+.auth-wrapper{
+  max-width:520px;
+  margin:0 auto 30px;
+}
+
+.auth-card{
+  background:rgba(255,255,255,0.95);
+  border-radius:24px;
+  padding:28px;
+  box-shadow:0 25px 50px rgba(0,0,0,0.25);
+}
+
+.auth-card h2{
+  margin:0 0 6px;
+  color:#352f63;
+}
+
+.auth-card p{color:#6b678f;margin-bottom:18px}
+
+.auth-card form{display:flex;flex-direction:column;gap:12px;margin-bottom:16px}
+
+.auth-card label{font-weight:600;color:#352f63}
+
+.auth-card input{padding:12px 14px;border-radius:12px;border:1px solid #dcd8ff;font-size:14px}
+
+.auth-card .error-msg{color:#c62828;font-size:0.85rem;min-height:1em}
+
+
+.session-bar{
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  gap:12px;
+  margin-bottom:18px;
+  color:#f0e9ff;
+}
+
+.btn-outline{background:transparent;border:1px solid rgba(255,255,255,0.6);color:#fff;box-shadow:none}
+.btn-outline:hover{background:rgba(255,255,255,0.1);box-shadow:none}
+.auth-card .btn-outline{
+  background:#fff;
+  color:var(--primary);
+  border:1px solid var(--primary);
+  box-shadow:0 10px 18px rgba(102,126,234,0.25);
+}
+.auth-card .btn-outline:hover{
+  background:var(--primary);
+  color:#fff;
+  box-shadow:0 14px 22px rgba(102,126,234,0.35);
+}
+
+.muted-text{color:#8c8ca8;font-size:0.9rem;text-align:center}
+
+.box{
+  background:var(--card-bg);
+  border-radius:20px;
+  padding:24px;
+  box-shadow:0 20px 45px rgba(0,0,0,0.15);
+  border:1px solid rgba(255,255,255,0.2);
+}
+
+.box h3{
+  margin-top:0;
+  color:#352f63;
+  font-size:1.2rem;
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+
+ul{list-style:none;padding:0;margin:0;}
+li{cursor:pointer;margin:4px 0;padding:10px 12px;border-radius:10px;transition:background 0.2s,transform 0.2s;background:#f4f5ff}
+li:hover{background:#e3e7ff;transform:translateX(4px)}
+
+.file-item{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.file-name{flex:1;font-weight:600;color:#4a4a68}
+.file-actions{display:flex;gap:8px}
+
+button{padding:10px 16px;border:none;border-radius:10px;cursor:pointer;background:var(--primary);color:white;font-size:14px;font-weight:600;box-shadow:0 10px 20px rgba(102,126,234,0.3);transition:transform 0.2s,box-shadow 0.2s}
+button:hover{transform:translateY(-2px);box-shadow:0 15px 25px rgba(102,126,234,0.35);background:var(--primary-dark)}
+button:disabled{background:#c5c5d6;cursor:not-allowed;box-shadow:none}
+.btn-small{padding:6px 12px;font-size:12px}
+.btn-danger{background:#f44336;box-shadow:0 10px 20px rgba(244,67,54,0.2)}
+.btn-danger:hover{background:#d32f2f}
+.btn-success{background:var(--success);box-shadow:0 10px 20px rgba(46,125,50,0.25)}
+.btn-success:hover{background:#256628}
+select,input[type="file"],input[type="text"],input[type="number"]{padding:10px;border:1px solid #dcd8ff;border-radius:10px;font-size:14px;width:100%;background:#fdfdff}
+
+.upload-input{
+  border:2px dashed rgba(102,126,234,0.35);
+  background:rgba(255,255,255,0.85);
+  color:#4a4a68;
+  transition:border-color 0.2s,background 0.2s;
+}
+.upload-input:hover{
+  border-color:var(--primary);
+  background:#f7f5ff;
+}
+.upload-input::file-selector-button{
+  margin-right:14px;
+  border:none;
+  border-radius:12px;
+  background:linear-gradient(135deg,#667eea,#764ba2);
+  color:#fff;
+  padding:10px 18px;
+  font-weight:600;
+  cursor:pointer;
+  box-shadow:0 12px 20px rgba(102,126,234,0.35);
+  transition:transform 0.2s,box-shadow 0.2s;
+}
+.upload-input::file-selector-button:hover{
+  transform:translateY(-2px);
+  box-shadow:0 16px 26px rgba(118,75,162,0.35);
+}
+.upload-input::-webkit-file-upload-button{
+  margin-right:14px;
+  border:none;
+  border-radius:12px;
+  background:linear-gradient(135deg,#667eea,#764ba2);
+  color:#fff;
+  padding:10px 18px;
+  font-weight:600;
+  cursor:pointer;
+  box-shadow:0 12px 20px rgba(102,126,234,0.35);
+  transition:transform 0.2s,box-shadow 0.2s;
+}
+.upload-input::-webkit-file-upload-button:hover{
+  transform:translateY(-2px);
+  box-shadow:0 16px 26px rgba(118,75,162,0.35);
+}
+
+.status{padding:4px 10px;border-radius:20px;font-size:12px;font-weight:600}
+.status-pending{background:#FFF9C4;color:#F57F17}
+.status-processing{background:#DDE9FF;color:#1565C0}
+.status-completed{background:#C8E6C9;color:#2E7D32}
+.status-failed{background:#FFCDD2;color:#C62828}
+
+.progress-bar{width:100%;height:14px;background:#ecebff;border-radius:10px;overflow:hidden;margin:8px 0;box-shadow:inset 0 3px 8px rgba(0,0,0,0.08)}
+.progress-fill{height:100%;background:linear-gradient(90deg,#667eea 0%,#764ba2 100%);transition:width 0.3s}
+
+.job-item{border:1px solid rgba(102,126,234,0.2);padding:16px;margin:10px 0;border-radius:14px;background:rgba(247,247,255,0.9);box-shadow:0 10px 25px rgba(0,0,0,0.08)}
+.job-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.job-details{font-size:13px;color:#555;line-height:1.5}
+
+#queue-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:20px}
+.stat-card{padding:16px;background:#fff;border-radius:14px;border-left:5px solid var(--primary);box-shadow:0 12px 25px rgba(0,0,0,0.12)}
+.stat-value{font-size:30px;font-weight:bold;color:var(--primary)}
+.stat-label{font-size:13px;color:#666;margin-top:4px;text-transform:uppercase;letter-spacing:0.5px}
+.audio-player{display:flex;flex-wrap:wrap;gap:24px;margin-top:16px}
+.audio-info{flex:1;min-width:260px}
+.audio-now-playing{font-size:1rem;font-weight:600;margin-bottom:12px;color:#333}
+.audio-controls{display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.audio-controls button{flex:0 0 auto;padding:10px 14px;font-size:18px;border:none;border-radius:8px;background:#e3f2fd;color:#1565c0;cursor:pointer;transition:transform 0.2s}
+.audio-controls button:hover{transform:translateY(-2px);background:#bbdefb}
+.audio-controls button.active{background:#1565c0;color:white}
+.audio-progress{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.audio-progress input[type="range"]{flex:1}
+.audio-volume{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.playlist-section{flex:1;min-width:260px;background:#fafafa;border-radius:12px;padding:16px;max-height:360px;overflow:auto}
+.playlist-header{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px}
+.playlist-header input{flex:1;padding:8px;border:1px solid #ddd;border-radius:6px}
+#audioPlaylist{list-style:none;padding:0;margin:0}
+#audioPlaylist li{padding:8px 10px;border-radius:8px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;background:white;border:1px solid #eee;cursor:pointer}
+#audioPlaylist li:hover{background:#e3f2fd}
+#audioPlaylist li.active{border-color:#2196F3;background:#bbdefb}
+.audio-empty{color:#999;text-align:center;padding:16px}
+.repeat-mode::after{content:attr(data-mode);font-size:11px;margin-left:6px;color:#555}
+</style>
+</head><body>
+<h1>🎬 Sistema Multimedia Distribuido</h1>
+<p class="subtitle">Carga archivos, conviértelos en múltiples formatos y contrólalos en tiempo real.</p>
+
+<div class="session-bar hidden" id="sessionBar">
+  <span id="sessionUser"></span>
+  <button id="btnLogout" class="btn-outline btn-small">Cerrar sesión</button>
+</div>
+
+<div class="auth-wrapper" id="authView">
+  <div class="auth-card">
+    <h2>Bienvenido</h2>
+    <p>Inicia sesión o crea tu cuenta para gestionar tu biblioteca multimedia.</p>
+    <form id="loginForm">
+      <label for="loginUser">Usuario</label>
+      <input id="loginUser" name="loginUser" minlength="3" required>
+      <label for="loginPass">Contraseña</label>
+      <input id="loginPass" name="loginPass" type="password" minlength="8" required>
+      <button type="submit">Iniciar sesión</button>
+      <div class="error-msg" id="loginError"></div>
+    </form>
+    <form id="signupForm">
+      <label for="signupUser">Crear usuario</label>
+      <input id="signupUser" name="signupUser" minlength="3" required>
+      <label for="signupPass">Contraseña</label>
+      <input id="signupPass" name="signupPass" type="password" minlength="8" required>
+      <button type="submit" class="btn-outline">Registrarme</button>
+      <div class="error-msg" id="signupError"></div>
+    </form>
+  </div>
+</div>
+
+<div id="appView" class="hidden">
+<div class="container">
+  <div class="section-grid two-columns">
+    <div class="box">
+      <h3>📤 Subir Archivo</h3>
+      <div class="row">
+        <input id="file" class="upload-input" type="file" accept="audio/*,video/*" />
+        <button id="btnUpload">Subir</button>
+        <span id="msg"></span>
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>🎵 Archivos Multimedia</h3>
+      <div class="row" style="justify-content:space-between;gap:10px">
+        <button id="btnRefresh" class="btn-small">Actualizar lista</button>
+        <span style="color:#777;font-size:0.9rem">Haz clic para previsualizar</span>
+      </div>
+      <ul id="list"></ul>
+    </div>
+  </div>
+
+  <div class="section-grid two-columns">
+    <div class="box">
+      <h3>🔄 Conversión de Archivos</h3>
+      <div id="conversionForm">
+        <p>Selecciona un archivo de la lista para convertir</p>
+        <div id="convertOptions" style="display:none">
+          <p><strong>Archivo:</strong> <span id="selectedFile"></span></p>
+          <div class="row">
+            <label style="font-weight:600">Formato de salida:</label>
+            <select id="outputFormat">
+              <optgroup label="Audio">
+                <option value="mp3">MP3</option>
+                <option value="flac">FLAC</option>
+                <option value="wav">WAV</option>
+                <option value="aac">AAC</option>
+                <option value="ogg">OGG</option>
+              </optgroup>
+              <optgroup label="Video">
+                <option value="mp4">MP4</option>
+                <option value="avi">AVI</option>
+                <option value="mkv">MKV</option>
+                <option value="webm">WEBM</option>
+                <option value="mov">MOV</option>
+              </optgroup>
+            </select>
+            <button id="btnConvert">Convertir</button>
+            <button id="btnCancelConvert" class="btn-danger btn-small">Cancelar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>📊 Estadísticas de Cola</h3>
+      <div id="queue-stats"></div>
+    </div>
+  </div>
+
+  <div class="section-stack">
+    <div class="box">
+      <h3>📋 Trabajos de Conversión</h3>
+    <div class="row">
+      <button id="btnRefreshJobs">Actualizar trabajos</button>
+      <select id="filterStatus">
+        <option value="">Todos</option>
+        <option value="pending">Pendientes</option>
+        <option value="processing">En proceso</option>
+        <option value="completed">Completados</option>
+        <option value="failed">Fallidos</option>
+      </select>
+    </div>
+    <div id="jobsList"></div>
+    </div>
+
+    <div class="box">
+      <h3>🎧 Centro de Audio</h3>
+    <div class="audio-player">
+    <div class="audio-info">
+      <p class="audio-now-playing" id="nowPlayingTitle">Selecciona una pista para iniciar la reproducción</p>
+      <div class="audio-controls">
+        <button id="btnPrevTrack" title="Anterior">⏮</button>
+        <button id="btnPlayPause" title="Reproducir / Pausar">▶️</button>
+        <button id="btnNextTrack" title="Siguiente">⏭</button>
+        <button id="btnShuffle" title="Modo aleatorio">🔀</button>
+        <button id="btnRepeat" class="repeat-mode" data-mode="lista" title="Modo repetición">🔁</button>
+      </div>
+      <div class="audio-progress">
+        <span id="currentTime">0:00</span>
+        <input type="range" id="progressBar" min="0" max="100" value="0">
+        <span id="totalTime">0:00</span>
+      </div>
+      <div class="audio-volume">
+        🔊 <input type="range" id="volumeBar" min="0" max="1" step="0.01" value="0.8">
+      </div>
+      <audio id="audioPlayer"></audio>
+    </div>
+    <div class="playlist-section">
+      <div class="playlist-header">
+        <strong>Lista de reproducción</strong>
+        <input type="text" id="audioSearch" placeholder="Buscar audio...">
+      </div>
+      <ul id="audioPlaylist"></ul>
+    </div>
+    </div>
+  </div>
+
+    <div class="box">
+      <h3>▶️ Reproductor</h3>
+      <div id="player"></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+const API="http://localhost:8000";
+const TOKEN_KEY="multimedia_token";
+
+let authToken = localStorage.getItem(TOKEN_KEY) || null;
+let currentUser = null;
+let appInitialized = false;
+let selectedFileForConversion = null;
+let autoRefreshInterval = null;
+const audioExtensions = ["mp3","wav","ogg","flac","aac","m4a"];
+let audioFiles = [];
+let currentTrackIndex = null;
+let isShuffleEnabled = false;
+let repeatMode = "list";
+let playerObjectUrl = null;
+let audioObjectUrl = null;
+
+const appView = document.getElementById("appView");
+const authView = document.getElementById("authView");
+const sessionBar = document.getElementById("sessionBar");
+const sessionUserLabel = document.getElementById("sessionUser");
+const loginForm = document.getElementById("loginForm");
+const signupForm = document.getElementById("signupForm");
+const loginError = document.getElementById("loginError");
+const signupError = document.getElementById("signupError");
+const logoutBtn = document.getElementById("btnLogout");
+const jobsContainer = document.getElementById("jobsList");
+const queueStatsEl = document.getElementById("queue-stats");
+const filesListEl = document.getElementById("list");
+const uploadMsgEl = document.getElementById("msg");
+
+const audioPlayer = document.getElementById("audioPlayer");
+const audioPlaylistEl = document.getElementById("audioPlaylist");
+const audioSearchInput = document.getElementById("audioSearch");
+const nowPlayingTitle = document.getElementById("nowPlayingTitle");
+const btnPrevTrack = document.getElementById("btnPrevTrack");
+const btnPlayPause = document.getElementById("btnPlayPause");
+const btnNextTrack = document.getElementById("btnNextTrack");
+const btnShuffle = document.getElementById("btnShuffle");
+const btnRepeat = document.getElementById("btnRepeat");
+const progressBar = document.getElementById("progressBar");
+const currentTimeEl = document.getElementById("currentTime");
+const totalTimeEl = document.getElementById("totalTime");
+const volumeBar = document.getElementById("volumeBar");
+
+function parseUserFromToken(token) {
   try {
-    const r = await fetch(`${API}/auth/signup`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ username: u, password: p })
-    });
-    const data = await r.json();
-
-    if (!r.ok) { msg(data.detail || 'No se pudo crear la cuenta.'); return; }
-
-    // auto-login con el token devuelto
-    if (data.access_token) {
-      TOKEN = data.access_token;
-      document.getElementById('authMsg').textContent = 'Sesión iniciada ✔';
-      // opcional: rellena el login con el nuevo usuario
-      document.getElementById('u').value = u;
-      document.getElementById('p').value = '';
-      msg('Cuenta creada ✔');
-      await refresh();
-    } else {
-      msg('Cuenta creada, pero no llegó token.');
-    }
+    const [, payload] = token.split(".");
+    if (!payload) return null;
+    const data = JSON.parse(atob(payload));
+    return data.sub || null;
   } catch {
-    msg('Error de red.');
+    return null;
   }
-};
+}
 
-document.getElementById('btnLogin').onclick = async () => {
-  const u = document.getElementById('u').value.trim();
-  const p = document.getElementById('p').value.trim();
-  if(!u || !p){ document.getElementById('authMsg').textContent="Ingresa usuario y clave"; return; }
-  const body = new URLSearchParams({username:u, password:p, grant_type:"password"});
-  const r = await fetch(`${API}/auth/login`, {
-    method: 'POST',
-    headers: {'Content-Type':'application/x-www-form-urlencoded'},
-    body
-  });
-  const data = await r.json();
-  if(data.access_token){
-    TOKEN = data.access_token;
-    document.getElementById('authMsg').textContent = "Sesión iniciada ✔";
-    refresh();
-  }else{
-    document.getElementById('authMsg').textContent = "Error de login";
+function applyToken(token, persist = true) {
+  authToken = token;
+  if (persist) localStorage.setItem(TOKEN_KEY, token);
+  currentUser = parseUserFromToken(token);
+  sessionUserLabel.textContent = currentUser ? `Sesión: ${currentUser}` : "";
+}
+
+function clearToken() {
+  authToken = null;
+  currentUser = null;
+  localStorage.removeItem(TOKEN_KEY);
+  sessionUserLabel.textContent = "";
+}
+
+function updateAuthUI() {
+  if (authToken) {
+    sessionBar.classList.remove("hidden");
+    authView.classList.add("hidden");
+    appView.classList.remove("hidden");
+    if (!appInitialized) initializeApp();
+  } else {
+    sessionBar.classList.add("hidden");
+    authView.classList.remove("hidden");
+    appView.classList.add("hidden");
   }
-};
+}
 
-async function api(path, opts={}){
-  opts.headers = Object.assign({'Authorization': `Bearer ${TOKEN}`}, opts.headers||{});
-  const res = await fetch(`${API}${path}`, opts);
-  if(res.status === 401){
-    document.getElementById('authMsg').textContent = "Token inválido o vencido. Vuelve a iniciar sesión.";
-    TOKEN = null;
-    throw new Error('401');
+function handleUnauthorized() {
+  clearToken();
+  stopAutoRefresh();
+  appInitialized = false;
+  audioFiles = [];
+  nowPlayingTitle.textContent = "Selecciona una pista para iniciar la reproducción";
+  updateAuthUI();
+  alert("Tu sesión expiró. Inicia sesión nuevamente.");
+}
+
+async function apiFetch(path, options = {}) {
+  if (!authToken) throw new Error("No autenticado");
+  const url = path.startsWith("http") ? path : `${API}${path}`;
+  const opts = { ...options };
+  const headers = new Headers(options.headers || {});
+  headers.set("Authorization", `Bearer ${authToken}`);
+  opts.headers = headers;
+  const res = await fetch(url, opts);
+  if (res.status === 401) {
+    handleUnauthorized();
+    throw new Error("Sesión expirada");
   }
   return res;
 }
 
-async function refresh(){
-  if (!requireAuth()) return;
+async function readJson(res) {
+  try {
+    return await res.json();
+  } catch {
+    return {};
+  }
+}
 
-  const r = await api('/media');
-  const data = await r.json();
+async function fetchMediaObjectUrl(name) {
+  const res = await apiFetch(`/media/${encodeURIComponent(name)}`);
+  if (!res.ok) {
+    const data = await readJson(res);
+    throw new Error(data.detail || "No se pudo cargar el archivo");
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
 
-  const ul = document.getElementById('list');
-  ul.innerHTML = '';
+async function renderPlayer(name) {
+  const container = document.getElementById("player");
+  container.innerHTML = '<p class="muted-text">Cargando vista previa...</p>';
+  const ext = name.toLowerCase().split(".").pop();
+  try {
+    if (playerObjectUrl) URL.revokeObjectURL(playerObjectUrl);
+    playerObjectUrl = await fetchMediaObjectUrl(name);
+    if (["mp4","webm","ogg","avi","mkv","mov"].includes(ext)) {
+      container.innerHTML = `<video src="${playerObjectUrl}" controls width="100%" style="max-width:720px"></video>`;
+    } else if (audioExtensions.includes(ext)) {
+      container.innerHTML = `<audio src="${playerObjectUrl}" controls style="width:100%;max-width:720px"></audio>`;
+    } else {
+      container.innerHTML = `<a href="${playerObjectUrl}" download="${name}">Descargar ${name}</a>`;
+    }
+  } catch (err) {
+    container.innerHTML = `<p class="muted-text">${err.message}</p>`;
+  }
+}
 
-  const files = Array.isArray(data.objects) ? data.objects.slice().sort((a,b)=>a.localeCompare(b)) : [];
-  if (files.length === 0){
-    const li = document.createElement('li');
-    li.className = 'muted';
-    li.textContent = 'No hay archivos. Sube uno arriba.';
-    ul.appendChild(li);
+async function refresh() {
+  try {
+    const res = await apiFetch("/media");
+    const data = await readJson(res);
+    if (!res.ok) throw new Error(data.detail || "No se pudieron obtener los archivos");
+    const files = data.objects || [];
+    filesListEl.innerHTML = "";
+    if (files.length === 0) {
+      filesListEl.innerHTML = '<li class="audio-empty">No hay archivos aún</li>';
+    }
+    files.forEach((n) => {
+      const li = document.createElement("li");
+      const div = document.createElement("div");
+      div.className = "file-item";
+
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "file-name";
+      nameSpan.textContent = n;
+      nameSpan.onclick = () => renderPlayer(n);
+
+      const actions = document.createElement("div");
+      actions.className = "file-actions";
+
+      const playBtn = document.createElement("button");
+      playBtn.textContent = "▶️ Reproducir";
+      playBtn.className = "btn-small btn-success";
+      playBtn.onclick = (e) => { e.stopPropagation(); renderPlayer(n); };
+
+      const convertBtn = document.createElement("button");
+      convertBtn.textContent = "🔄 Convertir";
+      convertBtn.className = "btn-small";
+      convertBtn.onclick = (e) => { e.stopPropagation(); selectFileForConversion(n); };
+
+      actions.appendChild(playBtn);
+      actions.appendChild(convertBtn);
+      div.appendChild(nameSpan);
+      div.appendChild(actions);
+      li.appendChild(div);
+      filesListEl.appendChild(li);
+    });
+    updateAudioLibrary(files);
+  } catch (err) {
+    filesListEl.innerHTML = `<li class="audio-empty">${err.message}</li>`;
+  }
+}
+
+function selectFileForConversion(filename) {
+  selectedFileForConversion = filename;
+  document.getElementById("selectedFile").textContent = filename;
+  document.getElementById("convertOptions").style.display = "block";
+}
+
+async function convertFile() {
+  if (!selectedFileForConversion) return;
+  const format = document.getElementById("outputFormat").value;
+  const btn = document.getElementById("btnConvert");
+  btn.disabled = true;
+  btn.textContent = "Convirtiendo...";
+  try {
+    const res = await apiFetch("/convert", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        input_file: selectedFileForConversion,
+        output_format: format
+      })
+    });
+    const data = await readJson(res);
+    if (!res.ok || !data.ok) throw new Error(data.detail || "No se pudo solicitar la conversión");
+    alert(`✅ Conversión solicitada! Job ID: ${data.job_id}`);
+    document.getElementById("convertOptions").style.display = "none";
+    selectedFileForConversion = null;
+    refreshJobs();
+    startAutoRefresh();
+  } catch (e) {
+    alert("❌ Error: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Convertir";
+  }
+}
+
+async function refreshJobs() {
+  try {
+    const status = document.getElementById("filterStatus").value;
+    const url = status ? `/jobs?status=${status}` : "/jobs";
+    const res = await apiFetch(url);
+    const data = await readJson(res);
+    if (!res.ok) throw new Error(data.detail || "No se pudieron obtener los trabajos");
+    jobsContainer.innerHTML = "";
+    if (!data.jobs || data.jobs.length === 0) {
+      jobsContainer.innerHTML = '<p class="muted-text">No hay trabajos</p>';
+      return;
+    }
+    data.jobs.forEach((job) => {
+      const div = document.createElement("div");
+      div.className = "job-item";
+
+      const header = document.createElement("div");
+      header.className = "job-header";
+
+      const title = document.createElement("strong");
+      title.textContent = `${job.input_file} → ${job.output_format.toUpperCase()}`;
+
+      const statusSpan = document.createElement("span");
+      statusSpan.className = `status status-${job.status}`;
+      statusSpan.textContent = job.status.toUpperCase();
+
+      header.appendChild(title);
+      header.appendChild(statusSpan);
+
+      const details = document.createElement("div");
+      details.className = "job-details";
+
+      let detailsHTML = `Job ID: ${job.job_id}<br>`;
+      if (job.assigned_worker) detailsHTML += `🎯 Asignado a: <strong>${job.assigned_worker}</strong><br>`;
+      if (job.worker_id) detailsHTML += `⚙️ Procesado por: <strong>${job.worker_id}</strong><br>`;
+      if (job.duration_seconds) detailsHTML += `⏱️ Duración: ${job.duration_seconds}s<br>`;
+      if (job.size_reduction_percent !== undefined) detailsHTML += `📊 Reducción: ${job.size_reduction_percent}%<br>`;
+      if (job.error) detailsHTML += `<span style="color:red">❌ Error: ${job.error}</span><br>`;
+
+      details.innerHTML = detailsHTML;
+
+      if (job.status === "processing" && job.progress) {
+        const progressBarEl = document.createElement("div");
+        progressBarEl.className = "progress-bar";
+        const fill = document.createElement("div");
+        fill.className = "progress-fill";
+        fill.style.width = `${job.progress}%`;
+        progressBarEl.appendChild(fill);
+        div.appendChild(progressBarEl);
+      }
+
+      if (job.status === "completed" && job.output_file) {
+        const downloadBtn = document.createElement("button");
+        downloadBtn.textContent = "⬇️ Descargar";
+        downloadBtn.className = "btn-small btn-success";
+        downloadBtn.onclick = () => renderPlayer(job.output_file);
+        details.appendChild(document.createElement("br"));
+        details.appendChild(downloadBtn);
+      }
+
+      div.appendChild(header);
+      div.appendChild(details);
+      jobsContainer.appendChild(div);
+    });
+  } catch (err) {
+    jobsContainer.innerHTML = `<p class="muted-text">${err.message}</p>`;
+  }
+}
+
+async function refreshQueueStats() {
+  try {
+    const res = await apiFetch("/queue/stats");
+    const data = await readJson(res);
+    if (!res.ok) throw new Error(data.detail || "No hay métricas de cola disponibles");
+    queueStatsEl.innerHTML = `
+      <div class="stat-card">
+        <div class="stat-value">${data.queue_length}</div>
+        <div class="stat-label">En Cola</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">${data.stats.processing}</div>
+        <div class="stat-label">Procesando</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">${data.stats.completed}</div>
+        <div class="stat-label">Completados</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">${data.stats.failed}</div>
+        <div class="stat-label">Fallidos</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">${data.total_jobs}</div>
+        <div class="stat-label">Total</div>
+      </div>
+    `;
+  } catch (err) {
+    queueStatsEl.innerHTML = `<p class="muted-text">${err.message}</p>`;
+  }
+}
+
+function updateAudioLibrary(files) {
+  audioFiles = files.filter((name) => {
+    const ext = name.toLowerCase().split(".").pop();
+    return audioExtensions.includes(ext);
+  });
+  if (audioFiles.length === 0) {
+    audioPlaylistEl.innerHTML = '<li class="audio-empty">Sube audios para crear tu playlist</li>';
+    nowPlayingTitle.textContent = "No hay pistas disponibles";
+    currentTrackIndex = null;
     return;
   }
-
-  for (const name of files){
-    const li = document.createElement('li');
-
-    // título clickeable para reproducir
-    const title = document.createElement('span');
-    title.textContent = name;
-    title.style.textDecoration = 'underline';
-    title.style.cursor = 'pointer';
-    title.onclick = () => renderPlayer(name);
-
-    // botón Compartir
-    const btnShare = document.createElement('button');
-    btnShare.textContent = 'Compartir';
-    btnShare.onclick = () => share(name);
-
-    // botón Borrar
-    const btnDel = document.createElement('button');
-    btnDel.textContent = 'Borrar';
-    btnDel.onclick = () => removeFile(name);
-
-    li.appendChild(title);
-    li.appendChild(document.createTextNode(' '));
-    li.appendChild(btnShare);
-    li.appendChild(document.createTextNode(' '));
-    li.appendChild(btnDel);
-    ul.appendChild(li);
+  renderAudioPlaylist(audioSearchInput ? audioSearchInput.value : "");
+  if (currentTrackIndex === null) {
+    nowPlayingTitle.textContent = `Lista preparada: ${audioFiles.length} pistas`;
   }
 }
 
-async function renderPlayer(name){
-  if(!requireAuth()) return;
-  document.getElementById('player').textContent = "Cargando…";
-  // Descarga con Authorization y crea un Blob URL (para poder usar <audio>/<video>)
-  const r = await api(`/media/${encodeURIComponent(name)}`);
-  const blob = await r.blob();
-  const url = URL.createObjectURL(blob);
-  const ext = name.toLowerCase().split('.').pop();
-  const el = document.getElementById('player');
-  if(['mp4','webm','ogg'].includes(ext)){
-    el.innerHTML = `<video controls src="${url}"></video>`;
-  }else if(['mp3','wav','ogg'].includes(ext)){
-    el.innerHTML = `<audio controls src="${url}"></audio>`;
-  }else{
-    el.innerHTML = `<a href="${url}" download="${name}">Descargar ${name}</a>`;
+function renderAudioPlaylist(filterText = "") {
+  const query = filterText.toLowerCase();
+  const entries = audioFiles
+    .map((name, index) => ({ name, index }))
+    .filter((item) => item.name.toLowerCase().includes(query));
+  if (entries.length === 0) {
+    audioPlaylistEl.innerHTML = '<li class="audio-empty">Sin coincidencias</li>';
+    return;
+  }
+  audioPlaylistEl.innerHTML = "";
+  entries.forEach((item) => {
+    const li = document.createElement("li");
+    li.className = "playlist-item" + (item.index === currentTrackIndex ? " active" : "");
+    li.textContent = item.name;
+    li.dataset.index = item.index;
+    li.onclick = () => playTrack(item.index);
+    audioPlaylistEl.appendChild(li);
+  });
+}
+
+async function playTrack(index) {
+  if (index === null || index === undefined) return;
+  const trackName = audioFiles[index];
+  if (!trackName) return;
+  currentTrackIndex = index;
+  try {
+    if (audioObjectUrl) URL.revokeObjectURL(audioObjectUrl);
+    audioObjectUrl = await fetchMediaObjectUrl(trackName);
+    audioPlayer.src = audioObjectUrl;
+    await audioPlayer.play().catch(() => {});
+    nowPlayingTitle.textContent = `Reproduciendo: ${trackName}`;
+    progressBar.value = 0;
+    renderAudioPlaylist(audioSearchInput ? audioSearchInput.value : "");
+    updatePlayPauseIcon();
+  } catch (err) {
+    nowPlayingTitle.textContent = err.message;
   }
 }
 
-async function share(name){
-  if(!requireAuth()) return;
-  const r = await api(`/share/${encodeURIComponent(name)}`, {method:'POST'});
-  const data = await r.json();
-  if(data.url){
-    await navigator.clipboard.writeText(data.url);
-    alert('Link copiado al portapapeles (válido 60 min).');
+function playNextTrack(auto = false) {
+  if (audioFiles.length === 0) return;
+  let nextIndex;
+  if (isShuffleEnabled) {
+    if (audioFiles.length === 1) {
+      nextIndex = currentTrackIndex ?? 0;
+    } else {
+      do {
+        nextIndex = Math.floor(Math.random() * audioFiles.length);
+      } while (nextIndex === currentTrackIndex);
+    }
+  } else {
+    nextIndex = currentTrackIndex === null ? 0 : currentTrackIndex + 1;
+    if (nextIndex >= audioFiles.length) {
+      if (auto && repeatMode === "off") {
+        nowPlayingTitle.textContent = "La lista terminó. Selecciona otra pista para continuar.";
+        audioPlayer.pause();
+        updatePlayPauseIcon();
+        return;
+      }
+      nextIndex = 0;
+    }
+  }
+  playTrack(nextIndex);
+}
+
+function playPreviousTrack() {
+  if (audioFiles.length === 0) return;
+  if (audioPlayer.currentTime > 5) {
+    audioPlayer.currentTime = 0;
+    audioPlayer.play().catch(() => {});
+    return;
+  }
+  let prevIndex = currentTrackIndex === null ? 0 : currentTrackIndex - 1;
+  if (prevIndex < 0) prevIndex = audioFiles.length - 1;
+  playTrack(prevIndex);
+}
+
+function togglePlayPause() {
+  if (audioFiles.length === 0) return;
+  if (currentTrackIndex === null) {
+    playTrack(0);
+    return;
+  }
+  if (audioPlayer.paused) {
+    audioPlayer.play().catch(() => {});
+  } else {
+    audioPlayer.pause();
+  }
+  updatePlayPauseIcon();
+}
+
+function updatePlayPauseIcon() {
+  btnPlayPause.textContent = audioPlayer.paused ? "▶️" : "⏸";
+}
+
+function toggleShuffle() {
+  isShuffleEnabled = !isShuffleEnabled;
+  btnShuffle.classList.toggle("active", isShuffleEnabled);
+}
+
+function cycleRepeatMode() {
+  const modes = ["list", "one", "off"];
+  const index = modes.indexOf(repeatMode);
+  repeatMode = modes[(index + 1) % modes.length];
+  const label = repeatMode === "list" ? "lista" : repeatMode === "one" ? "pista" : "off";
+  btnRepeat.dataset.mode = label;
+}
+
+function handleTrackEnded() {
+  if (repeatMode === "one") {
+    playTrack(currentTrackIndex);
+    return;
+  }
+  if (repeatMode === "off" && !isShuffleEnabled && currentTrackIndex === audioFiles.length - 1) {
+    nowPlayingTitle.textContent = "La reproducción finalizó.";
+    updatePlayPauseIcon();
+    return;
+  }
+  playNextTrack(true);
+}
+
+function updateTimeLabels() {
+  const current = audioPlayer.currentTime || 0;
+  const total = audioPlayer.duration || 0;
+  currentTimeEl.textContent = formatTime(current);
+  totalTimeEl.textContent = total ? formatTime(total) : "--:--";
+  progressBar.value = total ? (current / total) * 100 : 0;
+}
+
+function formatTime(seconds) {
+  const mins = Math.floor(seconds / 60) || 0;
+  const secs = Math.floor(seconds % 60) || 0;
+  return `${mins}:${secs.toString().padStart(2,"0")}`;
+}
+
+function startAutoRefresh() {
+  if (autoRefreshInterval || !authToken) return;
+  autoRefreshInterval = setInterval(() => {
+    refreshJobs();
+    refreshQueueStats();
+  }, 5000);
+}
+
+function stopAutoRefresh() {
+  if (autoRefreshInterval) {
+    clearInterval(autoRefreshInterval);
+    autoRefreshInterval = null;
   }
 }
 
-async function removeFile(name){
-  if(!requireAuth()) return;
-  if(!confirm(`¿Borrar "${name}"?`)) return;
-  const r = await api(`/media/${encodeURIComponent(name)}`, {method:'DELETE'});
-  const data = await r.json();
-  if(data.ok){ refresh(); }
-}
-
-document.getElementById('btnRefresh').onclick = refresh;
-
-document.getElementById('btnUpload').onclick = async () => {
-  if(!requireAuth()) return;
-  const f = document.getElementById('file').files[0];
-  if(!f){ return; }
-  const fd = new FormData(); fd.append('file', f);
-  const r = await api('/upload',{method:'POST', body: fd});
-  const data = await r.json();
-  document.getElementById('msg').textContent = data.ok ? 'Subido ✔' : ('Error: '+(data.detail||'')); 
+function initializeApp() {
   refresh();
+  refreshJobs();
+  refreshQueueStats();
+  startAutoRefresh();
+  appInitialized = true;
+}
+
+async function handleLogin(e) {
+  e.preventDefault();
+  loginError.textContent = "";
+  const username = document.getElementById("loginUser").value.trim();
+  const password = document.getElementById("loginPass").value.trim();
+  const body = new URLSearchParams();
+  body.append("username", username);
+  body.append("password", password);
+  try {
+    const res = await fetch(`${API}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body
+    });
+    const data = await readJson(res);
+    if (!res.ok) throw new Error(data.detail || "Login inválido");
+    applyToken(data.access_token);
+    updateAuthUI();
+  } catch (err) {
+    loginError.textContent = err.message;
+  }
+}
+
+async function handleSignup(e) {
+  e.preventDefault();
+  signupError.textContent = "";
+  const username = document.getElementById("signupUser").value.trim();
+  const password = document.getElementById("signupPass").value.trim();
+  try {
+    const res = await fetch(`${API}/auth/signup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password })
+    });
+    const data = await readJson(res);
+    if (!res.ok) throw new Error(data.detail || "No se pudo crear la cuenta");
+    applyToken(data.access_token);
+    updateAuthUI();
+  } catch (err) {
+    signupError.textContent = err.message;
+  }
+}
+
+function logout() {
+  clearToken();
+  if (playerObjectUrl) URL.revokeObjectURL(playerObjectUrl);
+  if (audioObjectUrl) URL.revokeObjectURL(audioObjectUrl);
+  stopAutoRefresh();
+  appInitialized = false;
+  audioFiles = [];
+  currentTrackIndex = null;
+  jobsContainer.innerHTML = "";
+  filesListEl.innerHTML = "";
+  queueStatsEl.innerHTML = "";
+  audioPlaylistEl.innerHTML = "";
+  nowPlayingTitle.textContent = "Selecciona una pista para iniciar la reproducción";
+  updateAuthUI();
+}
+
+if (audioSearchInput) {
+  audioSearchInput.addEventListener("input", (e) => renderAudioPlaylist(e.target.value));
+  audioSearchInput.value = "";
+}
+btnPlayPause.onclick = togglePlayPause;
+btnPrevTrack.onclick = playPreviousTrack;
+btnNextTrack.onclick = () => playNextTrack(false);
+btnShuffle.onclick = toggleShuffle;
+btnRepeat.onclick = cycleRepeatMode;
+progressBar.addEventListener("input", () => {
+  if (!audioPlayer.duration) return;
+  const percent = progressBar.value / 100;
+  audioPlayer.currentTime = percent * audioPlayer.duration;
+});
+volumeBar.addEventListener("input", () => {
+  audioPlayer.volume = Number(volumeBar.value);
+});
+audioPlayer.volume = Number(volumeBar.value) || 0.8;
+audioPlayer.addEventListener("timeupdate", updateTimeLabels);
+audioPlayer.addEventListener("loadedmetadata", updateTimeLabels);
+audioPlayer.addEventListener("ended", handleTrackEnded);
+audioPlayer.addEventListener("play", updatePlayPauseIcon);
+audioPlayer.addEventListener("pause", updatePlayPauseIcon);
+
+document.getElementById("btnRefresh").onclick = refresh;
+document.getElementById("btnRefreshJobs").onclick = () => {
+  refreshJobs();
+  refreshQueueStats();
 };
+document.getElementById("filterStatus").onchange = refreshJobs;
+document.getElementById("btnConvert").onclick = convertFile;
+document.getElementById("btnCancelConvert").onclick = () => {
+  document.getElementById("convertOptions").style.display = "none";
+  selectedFileForConversion = null;
+};
+
+document.getElementById("btnUpload").onclick = async () => {
+  const fileInput = document.getElementById("file");
+  const f = fileInput.files[0];
+  if (!f) return;
+
+  const btn = document.getElementById("btnUpload");
+  btn.disabled = true;
+  btn.textContent = "Subiendo...";
+
+  const fd = new FormData();
+  fd.append("file", f);
+
+  try {
+    const res = await apiFetch("/upload", { method: "POST", body: fd });
+    const data = await readJson(res);
+    if (!res.ok || !data.ok) throw new Error(data.detail || "Error al subir el archivo");
+    uploadMsgEl.textContent = "Subido ✅";
+    fileInput.value = "";
+    refresh();
+  } catch (e) {
+    uploadMsgEl.textContent = "Error: " + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Subir";
+  }
+};
+
+loginForm.addEventListener("submit", handleLogin);
+signupForm.addEventListener("submit", handleSignup);
+logoutBtn.addEventListener("click", logout);
+
+if (authToken) {
+  applyToken(authToken, false);
+}
+updateAuthUI();
 </script>
-</body>
-</html>
+</body></html>
