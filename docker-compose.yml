@@ -13,7 +13,7 @@ services:
       - SHARE_SECRET=change-this-please
       - SHARE_TTL_SECONDS=21600     # 6 horas (ajústalo)
       # (Opcional) si usas túnel / dominio público para el 8000:
-      - PUBLIC_BASE_URL=https://tu-subdominio.ngrok-free.app
+      - PUBLIC_BASE_URL=https://nonmetrical-mellissa-theistically.ngrok-free.dev
     depends_on: [redis, minio]
   worker_a:
     build: ./worker

@@ -27,7 +27,7 @@ ALLOWED_ORIGINS = [
 ]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["*"],  # más abierto para pruebas
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=False,
@@ -52,7 +52,16 @@ def _norm_endpoint(raw: str, default_scheme="http"):
 MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER", "admin")
 MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD", "admin12345")
 BUCKET          = os.getenv("MINIO_BUCKET", "media")
+
+# URL pública de la API para compartir (OBLIGATORIA si quieres compartir fuera de la LAN)
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+
+if not PUBLIC_BASE_URL:
+    # Para desarrollo interno podrías comentar esto, pero para compartir fuera es obligatorio
+    raise RuntimeError(
+        "PUBLIC_BASE_URL no está configurada. "
+        "Debe apuntar a la URL pública de la API (ej: https://mi-dominio.com o https://xxxxx.ngrok.app)"
+    )
 
 MINIO_HOST, MINIO_SECURE = _norm_endpoint(os.getenv("MINIO_ENDPOINT", "http://minio:9000"))
 minio = Minio(
@@ -257,7 +266,12 @@ def _share_key(tok: str) -> str:
     return f"{SHARE_PREFIX}{tok}"
 
 @app.post("/share/{name}")
-def share_create(name: str, minutes: int = 60, user: dict = Depends(get_current_user), request: Request = None):
+def share_create(
+    name: str,
+    minutes: int = 60,
+    user: dict = Depends(get_current_user),
+    request: Request = None,
+):
     """
     Crea un token temporal para compartir <name>.
     Devuelve una URL pública en esta API: /s/<token>
@@ -268,7 +282,7 @@ def share_create(name: str, minutes: int = 60, user: dict = Depends(get_current_
     # 1) Verifica que exista
     try:
         minio.stat_object(BUCKET, object_name)
-    except Exception as e:
+    except Exception:
         raise HTTPException(status_code=404, detail=f"not_found: {object_name}")
 
     # 2) Guarda token en Redis con TTL
@@ -276,21 +290,16 @@ def share_create(name: str, minutes: int = 60, user: dict = Depends(get_current_
     token = secrets.token_urlsafe(24)
 
     mime, _ = mimetypes.guess_type(name)
-    if mime is None: mime = "application/octet-stream"
+    if mime is None:
+        mime = "application/octet-stream"
 
     payload = {"object": object_name, "filename": name, "mime": mime}
     r.setex(_share_key(token), ttl, json.dumps(payload).encode())
 
-    # 3) Link absoluto usando la base de la solicitud
-    if PUBLIC_BASE_URL:
-        base = PUBLIC_BASE_URL
-    else:
-        # Soporta reverse proxies (ngrok/Nginx) si no usas PUBLIC_BASE_URL
-        scheme = request.headers.get("X-Forwarded-Proto", request.url.scheme)
-        host = request.headers.get("X-Forwarded-Host") or request.headers.get("host")
-        base = f"{scheme}://{host}".rstrip("/")
-
+    # 3) Link absoluto usando SIEMPRE PUBLIC_BASE_URL
+    base = PUBLIC_BASE_URL.rstrip("/")
     url = f"{base}/s/{token}"
+
     return {"url": url, "expires_in_min": ttl // 60}
 
 @app.get("/s/{token}")
