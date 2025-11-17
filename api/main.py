@@ -1,193 +1,160 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, status, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, StreamingResponse
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel
-
+from fastapi.responses import PlainTextResponse, StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import Counter, Gauge, generate_latest, CONTENT_TYPE_LATEST
-
 from minio import Minio
-from minio.error import S3Error
-import urllib.parse, mimetypes
-import os, json, time, re, secrets, traceback
-from datetime import datetime, timedelta
+from pydantic import BaseModel
+import os, mimetypes, urllib.parse, json, redis, uuid, httpx
+from datetime import datetime
+from typing import Optional, List, Dict
 
-from jose import JWTError, jwt
-from passlib.context import CryptContext
-import redis
-
-# =========================
-# App + CORS
-# =========================
 app = FastAPI(title="Multimedia API")
 
-ALLOWED_ORIGINS = [
-    "http://127.0.0.1:5500",
-    "http://localhost:5500",
-]
+REQUESTS = Counter("api_requests_total", "Total de requests")
+ACTIVE_SESSIONS = Gauge("active_sessions", "Sesiones activas")
+CONVERSION_REQUESTS = Counter("conversion_requests_total", "Total de conversiones solicitadas")
+JOBS_ENQUEUED = Gauge("jobs_enqueued", "Trabajos en cola")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # más abierto para pruebas
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=False,
-    expose_headers=["*"],
 )
 
-# =========================
-# Util: normalizar endpoint de MinIO
-# =========================
-def _norm_endpoint(raw: str, default_scheme="http"):
-    raw = (raw or "").strip().strip('"').strip("'")
-    if "://" not in raw:
-        raw = f"{default_scheme}://{raw}"
-    p = urllib.parse.urlparse(raw)
-    host = p.netloc or p.path
-    secure = (p.scheme == "https")
-    return host, secure
+# Modelos Pydantic
+class ConversionRequest(BaseModel):
+    input_file: str
+    output_format: str
+    options: Optional[dict] = None
 
-# =========================
-# MinIO (solo cliente interno)
-# =========================
-MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER", "admin")
-MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD", "admin12345")
-BUCKET          = os.getenv("MINIO_BUCKET", "media")
+class JobStatus(BaseModel):
+    job_id: str
+    status: str  # pending, processing, completed, failed
+    input_file: str
+    output_format: str
+    output_file: Optional[str] = None
+    worker_id: Optional[str] = None
+    created_at: str
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    error: Optional[str] = None
+    progress: Optional[int] = 0
 
-# URL pública de la API para compartir (OBLIGATORIA si quieres compartir fuera de la LAN)
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+endpoint_url = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
+parsed = urllib.parse.urlparse(endpoint_url)
+endpoint = parsed.netloc or parsed.path
+secure = parsed.scheme == "https"
 
-if not PUBLIC_BASE_URL:
-    # Para desarrollo interno podrías comentar esto, pero para compartir fuera es obligatorio
-    raise RuntimeError(
-        "PUBLIC_BASE_URL no está configurada. "
-        "Debe apuntar a la URL pública de la API (ej: https://mi-dominio.com o https://xxxxx.ngrok.app)"
-    )
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "admin")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "admin12345")
+BUCKET = os.getenv("MINIO_BUCKET", "media")
 
-MINIO_HOST, MINIO_SECURE = _norm_endpoint(os.getenv("MINIO_ENDPOINT", "http://minio:9000"))
-minio = Minio(
-    MINIO_HOST,
-    access_key=MINIO_ACCESS_KEY,
-    secret_key=MINIO_SECRET_KEY,
-    secure=MINIO_SECURE,
-)
+minio = Minio(endpoint, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=secure)
 
-# =========================
-# Redis
-# =========================
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-# decode_responses=False -> guardamos/recuperamos bytes
-r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=False)
+# Redis connection
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
-# =========================
-# Métricas Prometheus
-# =========================
-REQUESTS          = Counter("api_requests_total", "Total de requests")
-ACTIVE_SESSIONS   = Gauge("active_sessions", "Sesiones activas")
-API_UPLOADS       = Counter("api_uploads_total", "Total de subidas exitosas")
-API_STREAMS       = Counter("api_streams_total", "Total de streams exitosos")
-API_LOGINS        = Counter("api_logins_total", "Logins exitosos")
-API_DELETES       = Counter("api_deletes_total", "Borrados exitosos")
-API_JOBS_ENQUEUED = Counter("api_jobs_enqueued_total", "Jobs de conversión encolados")
-QUEUE_LEN         = Gauge  ("redis_media_jobs_len", "Items en cola media_jobs")
+# Redis keys
+JOBS_QUEUE = "conversion:queue"
+JOBS_STATUS_PREFIX = "job:status:"
 
-# =========================
-# Auth (demo con Redis)
-# =========================
-SECRET_KEY = "cambia_esto_por_un_valor_secreto_largo"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
+# Prometheus configuration
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus:9090")
 
-pwd_context   = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
-USERNAME_RE   = re.compile(r"^[a-zA-Z0-9_.-]{3,32}$")
+# Worker configuration
+WORKERS = [
+    {"id": "worker_a", "host": "worker_a", "metrics_port": 9101},
+    {"id": "worker_b", "host": "worker_b", "metrics_port": 9102},
+]
 
-def user_key(u: str) -> str:
-    return f"user:{u}"
-
-def user_exists(u: str) -> bool:
-    return bool(r.exists(user_key(u)))
-
-def get_user_hash(u: str) -> str | None:
-    h = r.hget(user_key(u), "password_hash")
-    return h.decode() if h else None
-
-def create_user(u: str, p: str):
-    pwd_hash = pwd_context.hash(p)
-    r.hset(user_key(u), mapping={
-        "password_hash": pwd_hash,
-        "created_at": datetime.utcnow().isoformat()
-    })
-
-def create_access_token(data: dict, minutes: int = ACCESS_TOKEN_EXPIRE_MINUTES):
-    to_encode = data.copy()
-    to_encode.update({"exp": datetime.utcnow() + timedelta(minutes=minutes)})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-def verify_user(username: str, password: str) -> bool:
-    h = get_user_hash(username)
-    return bool(h) and pwd_context.verify(password, h)
-
-async def get_current_user(token: str = Depends(oauth2_scheme)):
-    cred_exc = HTTPException(status_code=401, detail="Invalid credentials",
-                             headers={"WWW-Authenticate": "Bearer"})
+async def get_worker_metrics(worker_id: str, metric_name: str) -> Optional[float]:
+    """Obtener métrica de un worker desde Prometheus"""
     try:
-        payload  = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username = payload.get("sub")
-        if not username or not user_exists(username):
-            raise cred_exc
-        return {"username": username}
-    except JWTError:
-        raise cred_exc
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            query = f'{metric_name}{{job=~"workers.*"}}'
+            response = await client.get(
+                f"{PROMETHEUS_URL}/api/v1/query",
+                params={"query": query}
+            )
+            data = response.json()
+            
+            if data.get("status") == "success":
+                results = data.get("data", {}).get("result", [])
+                for result in results:
+                    # Buscar el worker específico por su puerto de métricas
+                    instance = result.get("metric", {}).get("instance", "")
+                    if worker_id in instance or str(WORKERS[0 if worker_id == "worker_a" else 1]["metrics_port"]) in instance:
+                        return float(result.get("value", [None, 0])[1])
+            return None
+    except Exception as e:
+        print(f"Error obteniendo métrica {metric_name} de {worker_id}: {e}")
+        return None
 
-class SignupReq(BaseModel):
-    username: str
-    password: str
+async def get_worker_stats(worker_id: str) -> Dict:
+    """Obtener estadísticas completas de un worker"""
+    cpu_load = await get_worker_metrics(worker_id, "worker_cpu_load")
+    memory_usage = await get_worker_metrics(worker_id, "worker_memory_usage_mb")
+    jobs_in_progress = await get_worker_metrics(worker_id, "worker_jobs_in_progress")
+    
+    # Obtener conversiones completadas
+    conversions_success = await get_worker_metrics(worker_id, 'worker_conversions_done_total{status="success"}')
+    conversions_failed = await get_worker_metrics(worker_id, 'worker_conversions_done_total{status="failed"}')
+    
+    return {
+        "worker_id": worker_id,
+        "cpu_load": cpu_load if cpu_load is not None else 0.0,
+        "memory_mb": memory_usage if memory_usage is not None else 0.0,
+        "jobs_in_progress": int(jobs_in_progress) if jobs_in_progress is not None else 0,
+        "conversions_success": int(conversions_success) if conversions_success is not None else 0,
+        "conversions_failed": int(conversions_failed) if conversions_failed is not None else 0,
+        "available": True,  # TODO: Implementar health check real
+    }
 
-@app.on_event("startup")
-def wait_for_redis():
-    for _ in range(30):
-        try:
-            r.ping()
-            return
-        except Exception:
-            time.sleep(1)
-    raise RuntimeError("Redis no disponible")
+async def select_best_worker() -> str:
+    """Seleccionar el worker con menor carga para asignar trabajo"""
+    workers_stats = []
+    
+    for worker in WORKERS:
+        stats = await get_worker_stats(worker["id"])
+        workers_stats.append(stats)
+    
+    # Ordenar por carga (prioridad: jobs en progreso, luego CPU)
+    # Worker con menos jobs y menor CPU es el mejor
+    best_worker = min(
+        workers_stats,
+        key=lambda w: (w["jobs_in_progress"], w["cpu_load"])
+    )
+    
+    print(f"[BALANCEO] Seleccionado {best_worker['worker_id']} (jobs: {best_worker['jobs_in_progress']}, CPU: {best_worker['cpu_load']:.2f})")
+    
+    return best_worker["worker_id"]
 
-@app.post("/auth/signup")
-def signup(req: SignupReq):
-    u = req.username.strip(); p = req.password
-    if not USERNAME_RE.match(u):
-        raise HTTPException(status_code=400, detail="Usuario inválido (3–32, letras/números/._-)")
-    if len(p) < 8:
-        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres")
-    if user_exists(u):
-        raise HTTPException(status_code=409, detail="El usuario ya existe")
-
-    create_user(u, p)
-    token = create_access_token({"sub": u})
-    API_LOGINS.inc()
-    return {"ok": True, "access_token": token, "token_type": "bearer"}
-
-@app.post("/auth/login")
-async def login(form: OAuth2PasswordRequestForm = Depends()):
-    if not verify_user(form.username, form.password):
-        raise HTTPException(status_code=400, detail="Incorrect username or password")
-    API_LOGINS.inc()
-    token = create_access_token({"sub": form.username})
-    return {"access_token": token, "token_type": "bearer"}
-
-# =========================
-# Bucket
-# =========================
 @app.on_event("startup")
 def ensure_bucket():
     if not minio.bucket_exists(BUCKET):
         minio.make_bucket(BUCKET)
 
-# =========================
-# Health / Metrics
-# =========================
+# Montar archivos estáticos (HTML)
+app.mount("/static", StaticFiles(directory="/app/web"), name="static")
+
+@app.get("/")
+def root():
+    """Redirigir a player.html"""
+    return FileResponse("/app/web/player.html")
+
+@app.get("/admin.html")
+def admin():
+    """Servir dashboard de monitoreo"""
+    return FileResponse("/app/web/admin.html")
+
+@app.get("/player.html")
+def player():
+    """Servir interfaz de usuario"""
+    return FileResponse("/app/web/player.html")
+
 @app.get("/health")
 def health():
     REQUESTS.inc()
@@ -197,29 +164,22 @@ def health():
 def metrics():
     return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
-# =========================
-# Mis archivos
-# =========================
 @app.get("/media")
-def list_media(user: dict = Depends(get_current_user)):
-    prefix = f"{user['username']}/"
+def list_media():
     try:
-        objs = minio.list_objects(BUCKET, prefix=prefix, recursive=True)
-        return {"objects": [o.object_name[len(prefix):] for o in objs]}
+        return {"objects": [o.object_name for o in minio.list_objects(BUCKET, recursive=True)]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/media/{name}")
-def stream_media(name: str, user: dict = Depends(get_current_user)):
-    object_name = f"{user['username']}/{name}"
+def stream_media(name: str):
     try:
-        resp = minio.get_object(BUCKET, object_name)
+        resp = minio.get_object(BUCKET, name)
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"No existe: {name}. {e}")
-
     mime, _ = mimetypes.guess_type(name)
-    if mime is None: mime = "application/octet-stream"
-
+    if mime is None:
+        mime = "application/octet-stream"
     def it():
         try:
             while True:
@@ -228,118 +188,162 @@ def stream_media(name: str, user: dict = Depends(get_current_user)):
                 yield chunk
         finally:
             resp.close(); resp.release_conn()
-
-    API_STREAMS.inc()
     return StreamingResponse(it(), media_type=mime)
 
 @app.post("/upload")
-def upload_media(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
-    object_name = f"{user['username']}/{file.filename}"
+def upload_media(file: UploadFile = File(...)):
     try:
         minio.put_object(
-            BUCKET, object_name, file.file,
+            BUCKET, file.filename, file.file,
             length=-1, part_size=10*1024*1024,
             content_type=file.content_type or "application/octet-stream",
         )
-        API_UPLOADS.inc()
         return {"ok": True, "name": file.filename}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/media/{name}")
-def delete_media(name: str, user: dict = Depends(get_current_user)):
-    object_name = f"{user['username']}/{name}"
+@app.post("/convert")
+async def request_conversion(req: ConversionRequest):
+    """Solicitar conversión de archivo multimedia con balanceo de carga inteligente"""
+    CONVERSION_REQUESTS.inc()
+    
+    # Verificar que el archivo existe en MinIO
     try:
-        minio.remove_object(BUCKET, object_name)
-        API_DELETES.inc()
-        return {"ok": True}
-    except S3Error as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-# =========================
-# Compartir por token (Opción 3)
-# =========================
-# Clave en Redis: share:<token> -> JSON { "object": "...", "filename": "...", "mime": "..."}
-SHARE_PREFIX = "share:"
-
-def _share_key(tok: str) -> str:
-    return f"{SHARE_PREFIX}{tok}"
-
-@app.post("/share/{name}")
-def share_create(
-    name: str,
-    minutes: int = 60,
-    user: dict = Depends(get_current_user),
-    request: Request = None,
-):
-    """
-    Crea un token temporal para compartir <name>.
-    Devuelve una URL pública en esta API: /s/<token>
-    """
-    REQUESTS.inc()
-    object_name = f"{user['username']}/{name}"
-
-    # 1) Verifica que exista
-    try:
-        minio.stat_object(BUCKET, object_name)
+        minio.stat_object(BUCKET, req.input_file)
     except Exception:
-        raise HTTPException(status_code=404, detail=f"not_found: {object_name}")
-
-    # 2) Guarda token en Redis con TTL
-    ttl = max(60, min(60 * minutes, 60 * 60 * 24 * 7))  # entre 1 min y 7 días
-    token = secrets.token_urlsafe(24)
-
-    mime, _ = mimetypes.guess_type(name)
-    if mime is None:
-        mime = "application/octet-stream"
-
-    payload = {"object": object_name, "filename": name, "mime": mime}
-    r.setex(_share_key(token), ttl, json.dumps(payload).encode())
-
-    # 3) Link absoluto usando SIEMPRE PUBLIC_BASE_URL
-    base = PUBLIC_BASE_URL.rstrip("/")
-    url = f"{base}/s/{token}"
-
-    return {"url": url, "expires_in_min": ttl // 60}
-
-@app.get("/s/{token}")
-def share_resolve(token: str):
-    """
-    Público. No requiere auth.
-    Lee token en Redis y **sirve** el archivo desde MinIO (proxy).
-    Así no exponemos MinIO ni su dominio/puerto.
-    """
-    data = r.get(_share_key(token))
-    if not data:
-        raise HTTPException(status_code=404, detail="invalid_or_expired_token")
-
-    try:
-        meta = json.loads(data.decode())
-        object_name = meta["object"]
-        filename    = meta.get("filename", "file")
-        mime        = meta.get("mime", "application/octet-stream")
-    except Exception:
-        raise HTTPException(status_code=500, detail="bad_token_payload")
-
-    try:
-        resp = minio.get_object(BUCKET, object_name)
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"not_found: {object_name}")
-
-    headers = {
-        "Content-Type": mime,
-        "Content-Disposition": f'inline; filename="{filename}"',
-        # Permitir que <audio>/<video> en otros orígenes lo consuman sin lío
-        "Access-Control-Allow-Origin": "*",
+        raise HTTPException(status_code=404, detail=f"Archivo no encontrado: {req.input_file}")
+    
+    # Validar formato de salida
+    valid_audio = ["mp3", "flac", "wav", "aac", "ogg"]
+    valid_video = ["mp4", "avi", "mkv", "webm", "mov"]
+    valid_formats = valid_audio + valid_video
+    
+    output_fmt = req.output_format.lower()
+    if output_fmt not in valid_formats:
+        raise HTTPException(status_code=400, detail=f"Formato no soportado: {output_fmt}")
+    
+    # Seleccionar el mejor worker según carga actual
+    assigned_worker = await select_best_worker()
+    
+    # Crear job
+    job_id = str(uuid.uuid4())
+    job_data = {
+        "job_id": job_id,
+        "status": "pending",
+        "input_file": req.input_file,
+        "output_format": output_fmt,
+        "options": req.options or {},
+        "created_at": datetime.utcnow().isoformat(),
+        "progress": 0,
+        "assigned_worker": assigned_worker,  # Nuevo: worker asignado
+    }
+    
+    # Guardar estado del job
+    redis_client.set(f"{JOBS_STATUS_PREFIX}{job_id}", json.dumps(job_data))
+    
+    # Encolar job en cola específica del worker
+    worker_queue = f"conversion:queue:{assigned_worker}"
+    redis_client.rpush(worker_queue, job_id)
+    
+    # También en cola general (fallback)
+    redis_client.rpush(JOBS_QUEUE, job_id)
+    
+    JOBS_ENQUEUED.inc()
+    
+    return {
+        "ok": True, 
+        "job_id": job_id, 
+        "status": "pending",
+        "assigned_worker": assigned_worker
     }
 
-    def it():
-        try:
-            while True:
-                chunk = resp.read(1024 * 1024)
-                if not chunk: break
-                yield chunk
-        finally:
-            resp.close(); resp.release_conn()
+@app.get("/jobs/{job_id}")
+def get_job_status(job_id: str):
+    """Obtener estado de un trabajo de conversión"""
+    job_data = redis_client.get(f"{JOBS_STATUS_PREFIX}{job_id}")
+    if not job_data:
+        raise HTTPException(status_code=404, detail="Job no encontrado")
+    
+    return json.loads(job_data)
 
-    return StreamingResponse(it(), headers=headers, media_type=mime)
+@app.get("/jobs")
+def list_jobs(status: Optional[str] = None, limit: int = 50):
+    """Listar trabajos de conversión"""
+    # Obtener todas las keys de jobs
+    keys = redis_client.keys(f"{JOBS_STATUS_PREFIX}*")
+    jobs = []
+    
+    for key in keys[:limit]:
+        job_data = redis_client.get(key)
+        if job_data:
+            job = json.loads(job_data)
+            if status is None or job.get("status") == status:
+                jobs.append(job)
+    
+    # Ordenar por fecha de creación (más reciente primero)
+    jobs.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    
+    return {"jobs": jobs, "total": len(jobs)}
+
+@app.get("/queue/stats")
+def queue_stats():
+    """Estadísticas de la cola de trabajos"""
+    queue_length = redis_client.llen(JOBS_QUEUE)
+    
+    # Contar jobs por estado
+    keys = redis_client.keys(f"{JOBS_STATUS_PREFIX}*")
+    stats = {"pending": 0, "processing": 0, "completed": 0, "failed": 0}
+    
+    for key in keys:
+        job_data = redis_client.get(key)
+        if job_data:
+            job = json.loads(job_data)
+            status = job.get("status", "unknown")
+            if status in stats:
+                stats[status] += 1
+    
+    return {
+        "queue_length": queue_length,
+        "stats": stats,
+        "total_jobs": len(keys)
+    }
+
+@app.get("/workers/stats")
+async def workers_stats():
+    """Estadísticas de todos los workers para dashboard de monitoreo"""
+    workers_data = []
+    
+    for worker in WORKERS:
+        stats = await get_worker_stats(worker["id"])
+        
+        # Agregar información adicional
+        stats["host"] = worker["host"]
+        stats["metrics_port"] = worker["metrics_port"]
+        
+        # Calcular score de carga (0-100, donde 100 es completamente ocupado)
+        load_score = min(100, int(
+            (stats["jobs_in_progress"] * 30) +  # 30 puntos por job
+            (stats["cpu_load"] * 50)            # 50 puntos por CPU completo
+        ))
+        stats["load_score"] = load_score
+        stats["status"] = "busy" if load_score > 60 else "available" if load_score > 30 else "idle"
+        
+        workers_data.append(stats)
+    
+    # Estadísticas generales
+    total_jobs = sum(w["jobs_in_progress"] for w in workers_data)
+    avg_cpu = sum(w["cpu_load"] for w in workers_data) / len(workers_data) if workers_data else 0
+    total_success = sum(w["conversions_success"] for w in workers_data)
+    total_failed = sum(w["conversions_failed"] for w in workers_data)
+    
+    return {
+        "workers": workers_data,
+        "summary": {
+            "total_workers": len(workers_data),
+            "active_workers": sum(1 for w in workers_data if w["available"]),
+            "total_jobs_processing": total_jobs,
+            "average_cpu_load": round(avg_cpu, 2),
+            "total_conversions_success": total_success,
+            "total_conversions_failed": total_failed,
+        }
+    }
