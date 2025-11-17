@@ -10,7 +10,10 @@ services:
       - MINIO_ACCESS_KEY=admin
       - MINIO_SECRET_KEY=admin12345
       - MINIO_BUCKET=media
-    depends_on: [redis, minio]
+      - PROMETHEUS_URL=http://prometheus:9090
+    volumes:
+      - ./web:/app/web:ro
+    depends_on: [redis, minio, prometheus]
   worker_a:
     build: ./worker
     container_name: worker_a

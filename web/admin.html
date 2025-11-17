@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard de Monitoreo - Sistema Multimedia Distribuido</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #333;
+  padding: 20px;
+  min-height: 100vh;
+}
+
+.header {
+  text-align: center;
+  color: white;
+  margin-bottom: 30px;
+}
+
+.header h1 {
+  font-size: 2.5rem;
+  margin-bottom: 10px;
+  text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+}
+
+.header p {
+  font-size: 1.1rem;
+  opacity: 0.9;
+}
+
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 20px;
+  margin-bottom: 30px;
+}
+
+.stat-card {
+  background: white;
+  border-radius: 15px;
+  padding: 25px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.stat-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 15px 40px rgba(0,0,0,0.3);
+}
+
+.stat-card h3 {
+  font-size: 0.9rem;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 10px;
+}
+
+.stat-card .value {
+  font-size: 2.5rem;
+  font-weight: bold;
+  color: #667eea;
+  margin-bottom: 5px;
+}
+
+.stat-card .label {
+  font-size: 0.85rem;
+  color: #999;
+}
+
+.workers-section {
+  background: white;
+  border-radius: 15px;
+  padding: 30px;
+  margin-bottom: 30px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+}
+
+.workers-section h2 {
+  font-size: 1.8rem;
+  margin-bottom: 20px;
+  color: #333;
+  border-bottom: 3px solid #667eea;
+  padding-bottom: 10px;
+}
+
+.workers-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.worker-card {
+  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  border-radius: 12px;
+  padding: 20px;
+  border-left: 5px solid #667eea;
+  transition: all 0.3s ease;
+}
+
+.worker-card:hover {
+  transform: scale(1.02);
+  box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+}
+
+.worker-card.idle {
+  border-left-color: #4CAF50;
+  background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+}
+
+.worker-card.available {
+  border-left-color: #2196F3;
+  background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+}
+
+.worker-card.busy {
+  border-left-color: #FF9800;
+  background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
+}
+
+.worker-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.worker-header h3 {
+  font-size: 1.3rem;
+  color: #333;
+}
+
+.worker-status {
+  padding: 5px 15px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.worker-status.idle { background: #4CAF50; color: white; }
+.worker-status.available { background: #2196F3; color: white; }
+.worker-status.busy { background: #FF9800; color: white; }
+
+.worker-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.metric {
+  background: rgba(255,255,255,0.7);
+  padding: 10px;
+  border-radius: 8px;
+}
+
+.metric-label {
+  font-size: 0.75rem;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.metric-value {
+  font-size: 1.3rem;
+  font-weight: bold;
+  color: #333;
+  margin-top: 5px;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 8px;
+  background: rgba(0,0,0,0.1);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+  transition: width 0.5s ease;
+}
+
+.charts-section {
+  background: white;
+  border-radius: 15px;
+  padding: 30px;
+  margin-bottom: 30px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+}
+
+.charts-section h2 {
+  font-size: 1.8rem;
+  margin-bottom: 20px;
+  color: #333;
+  border-bottom: 3px solid #667eea;
+  padding-bottom: 10px;
+}
+
+.charts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+  gap: 30px;
+  margin-top: 20px;
+}
+
+.chart-container {
+  background: #f8f9fa;
+  padding: 20px;
+  border-radius: 10px;
+  min-height: 300px;
+}
+
+.chart-container h3 {
+  font-size: 1.1rem;
+  color: #666;
+  margin-bottom: 15px;
+  text-align: center;
+}
+
+.jobs-section {
+  background: white;
+  border-radius: 15px;
+  padding: 30px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+}
+
+.jobs-section h2 {
+  font-size: 1.8rem;
+  margin-bottom: 20px;
+  color: #333;
+  border-bottom: 3px solid #667eea;
+  padding-bottom: 10px;
+}
+
+.jobs-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 20px;
+}
+
+.jobs-table th {
+  background: #667eea;
+  color: white;
+  padding: 12px;
+  text-align: left;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.85rem;
+  letter-spacing: 0.5px;
+}
+
+.jobs-table td {
+  padding: 12px;
+  border-bottom: 1px solid #eee;
+}
+
+.jobs-table tr:hover {
+  background: #f8f9fa;
+}
+
+.job-status-badge {
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+
+.job-status-badge.pending { background: #FFF9C4; color: #F57F17; }
+.job-status-badge.processing { background: #BBDEFB; color: #1565C0; }
+.job-status-badge.completed { background: #C8E6C9; color: #2E7D32; }
+.job-status-badge.failed { background: #FFCDD2; color: #C62828; }
+
+.refresh-indicator {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  background: white;
+  padding: 10px 20px;
+  border-radius: 25px;
+  box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.9rem;
+  color: #666;
+}
+
+.refresh-indicator .spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #ddd;
+  border-top-color: #667eea;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.no-data {
+  text-align: center;
+  color: #999;
+  padding: 40px;
+  font-size: 1.1rem;
+}
+
+@media (max-width: 768px) {
+  .header h1 { font-size: 1.8rem; }
+  .stats-grid { grid-template-columns: 1fr; }
+  .workers-grid { grid-template-columns: 1fr; }
+  .charts-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div class="refresh-indicator">
+  <div class="spinner"></div>
+  <span>Actualizando cada 2s</span>
+</div>
+
+<div class="header">
+  <h1>📊 Dashboard de Monitoreo</h1>
+  <p>Sistema Multimedia Distribuido - Balanceo de Carga Inteligente</p>
+</div>
+
+<div class="container">
+  <!-- Estadísticas Generales -->
+  <div class="stats-grid">
+    <div class="stat-card">
+      <h3>Workers Activos</h3>
+      <div class="value" id="stat-active-workers">-</div>
+      <div class="label">de <span id="stat-total-workers">-</span> totales</div>
+    </div>
+    
+    <div class="stat-card">
+      <h3>Jobs en Proceso</h3>
+      <div class="value" id="stat-jobs-processing">-</div>
+      <div class="label">conversiones activas</div>
+    </div>
+    
+    <div class="stat-card">
+      <h3>CPU Promedio</h3>
+      <div class="value" id="stat-avg-cpu">-</div>
+      <div class="label">carga del sistema</div>
+    </div>
+    
+    <div class="stat-card">
+      <h3>Conversiones Exitosas</h3>
+      <div class="value" id="stat-success">-</div>
+      <div class="label">total completado</div>
+    </div>
+    
+    <div class="stat-card">
+      <h3>Conversiones Fallidas</h3>
+      <div class="value" id="stat-failed">-</div>
+      <div class="label">errores encontrados</div>
+    </div>
+  </div>
+
+  <!-- Estado de Workers -->
+  <div class="workers-section">
+    <h2>🖥️ Estado de Workers</h2>
+    <div class="workers-grid" id="workers-container">
+      <div class="no-data">Cargando información de workers...</div>
+    </div>
+  </div>
+
+  <!-- Gráficos en Tiempo Real -->
+  <div class="charts-section">
+    <h2>📈 Métricas en Tiempo Real</h2>
+    <div class="charts-grid">
+      <div class="chart-container">
+        <h3>Carga de CPU por Worker</h3>
+        <canvas id="cpuChart"></canvas>
+      </div>
+      <div class="chart-container">
+        <h3>Jobs en Progreso</h3>
+        <canvas id="jobsChart"></canvas>
+      </div>
+      <div class="chart-container">
+        <h3>Memoria RAM (MB)</h3>
+        <canvas id="memoryChart"></canvas>
+      </div>
+      <div class="chart-container">
+        <h3>Conversiones Completadas</h3>
+        <canvas id="conversionsChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Trabajos Recientes -->
+  <div class="jobs-section">
+    <h2>📋 Trabajos Recientes</h2>
+    <table class="jobs-table">
+      <thead>
+        <tr>
+          <th>Archivo</th>
+          <th>Formato</th>
+          <th>Estado</th>
+          <th>Worker Asignado</th>
+          <th>Worker Procesado</th>
+          <th>Duración</th>
+          <th>Reducción</th>
+        </tr>
+      </thead>
+      <tbody id="jobs-tbody">
+        <tr>
+          <td colspan="7" class="no-data">Cargando trabajos...</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const API = 'http://localhost:8000';
+let updateInterval;
+
+// Configuración de gráficos
+const chartOptions = {
+  responsive: true,
+  maintainAspectRatio: true,
+  plugins: {
+    legend: { display: true, position: 'top' }
+  },
+  scales: {
+    y: { beginAtZero: true }
+  }
+};
+
+// Datos históricos para gráficos
+const chartData = {
+  labels: [],
+  cpu: { worker_a: [], worker_b: [] },
+  jobs: { worker_a: [], worker_b: [] },
+  memory: { worker_a: [], worker_b: [] },
+  conversions: { worker_a: [], worker_b: [] }
+};
+
+const maxDataPoints = 20;
+
+// Inicializar gráficos
+const cpuChart = new Chart(document.getElementById('cpuChart'), {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [
+      {
+        label: 'Worker A',
+        data: [],
+        borderColor: '#667eea',
+        backgroundColor: 'rgba(102, 126, 234, 0.1)',
+        tension: 0.4
+      },
+      {
+        label: 'Worker B',
+        data: [],
+        borderColor: '#764ba2',
+        backgroundColor: 'rgba(118, 75, 162, 0.1)',
+        tension: 0.4
+      }
+    ]
+  },
+  options: {
+    ...chartOptions,
+    scales: {
+      y: { beginAtZero: true, max: 1, ticks: { callback: v => `${(v*100).toFixed(0)}%` } }
+    }
+  }
+});
+
+const jobsChart = new Chart(document.getElementById('jobsChart'), {
+  type: 'bar',
+  data: {
+    labels: [],
+    datasets: [
+      {
+        label: 'Worker A',
+        data: [],
+        backgroundColor: 'rgba(102, 126, 234, 0.8)'
+      },
+      {
+        label: 'Worker B',
+        data: [],
+        backgroundColor: 'rgba(118, 75, 162, 0.8)'
+      }
+    ]
+  },
+  options: chartOptions
+});
+
+const memoryChart = new Chart(document.getElementById('memoryChart'), {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [
+      {
+        label: 'Worker A',
+        data: [],
+        borderColor: '#4CAF50',
+        backgroundColor: 'rgba(76, 175, 80, 0.1)',
+        tension: 0.4
+      },
+      {
+        label: 'Worker B',
+        data: [],
+        borderColor: '#2196F3',
+        backgroundColor: 'rgba(33, 150, 243, 0.1)',
+        tension: 0.4
+      }
+    ]
+  },
+  options: chartOptions
+});
+
+const conversionsChart = new Chart(document.getElementById('conversionsChart'), {
+  type: 'bar',
+  data: {
+    labels: ['Worker A', 'Worker B'],
+    datasets: [
+      {
+        label: 'Exitosas',
+        data: [0, 0],
+        backgroundColor: 'rgba(76, 175, 80, 0.8)'
+      },
+      {
+        label: 'Fallidas',
+        data: [0, 0],
+        backgroundColor: 'rgba(244, 67, 54, 0.8)'
+      }
+    ]
+  },
+  options: {
+    ...chartOptions,
+    scales: {
+      x: { stacked: false },
+      y: { stacked: false, beginAtZero: true }
+    }
+  }
+});
+
+// Función para actualizar datos de gráficos
+function updateChartData(workers) {
+  const now = new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  
+  chartData.labels.push(now);
+  if (chartData.labels.length > maxDataPoints) {
+    chartData.labels.shift();
+  }
+  
+  workers.forEach(w => {
+    const key = w.worker_id;
+    
+    // CPU
+    chartData.cpu[key].push(w.cpu_load);
+    if (chartData.cpu[key].length > maxDataPoints) chartData.cpu[key].shift();
+    
+    // Jobs
+    chartData.jobs[key].push(w.jobs_in_progress);
+    if (chartData.jobs[key].length > maxDataPoints) chartData.jobs[key].shift();
+    
+    // Memory
+    chartData.memory[key].push(w.memory_mb);
+    if (chartData.memory[key].length > maxDataPoints) chartData.memory[key].shift();
+  });
+  
+  // Actualizar gráficos
+  cpuChart.data.labels = chartData.labels;
+  cpuChart.data.datasets[0].data = chartData.cpu.worker_a;
+  cpuChart.data.datasets[1].data = chartData.cpu.worker_b;
+  cpuChart.update('none');
+  
+  jobsChart.data.labels = chartData.labels;
+  jobsChart.data.datasets[0].data = chartData.jobs.worker_a;
+  jobsChart.data.datasets[1].data = chartData.jobs.worker_b;
+  jobsChart.update('none');
+  
+  memoryChart.data.labels = chartData.labels;
+  memoryChart.data.datasets[0].data = chartData.memory.worker_a;
+  memoryChart.data.datasets[1].data = chartData.memory.worker_b;
+  memoryChart.update('none');
+  
+  // Conversiones (acumulativo)
+  conversionsChart.data.datasets[0].data = [
+    workers[0].conversions_success,
+    workers[1].conversions_success
+  ];
+  conversionsChart.data.datasets[1].data = [
+    workers[0].conversions_failed,
+    workers[1].conversions_failed
+  ];
+  conversionsChart.update('none');
+}
+
+// Actualizar estadísticas generales
+async function updateStats() {
+  try {
+    const response = await fetch(`${API}/workers/stats`);
+    const data = await response.json();
+    
+    // Estadísticas generales
+    document.getElementById('stat-active-workers').textContent = data.summary.active_workers;
+    document.getElementById('stat-total-workers').textContent = data.summary.total_workers;
+    document.getElementById('stat-jobs-processing').textContent = data.summary.total_jobs_processing;
+    document.getElementById('stat-avg-cpu').textContent = `${(data.summary.average_cpu_load * 100).toFixed(1)}%`;
+    document.getElementById('stat-success').textContent = data.summary.total_conversions_success;
+    document.getElementById('stat-failed').textContent = data.summary.total_conversions_failed;
+    
+    // Workers
+    const container = document.getElementById('workers-container');
+    container.innerHTML = '';
+    
+    data.workers.forEach(worker => {
+      const card = document.createElement('div');
+      card.className = `worker-card ${worker.status}`;
+      card.innerHTML = `
+        <div class="worker-header">
+          <h3>🖥️ ${worker.worker_id.toUpperCase()}</h3>
+          <span class="worker-status ${worker.status}">${worker.status}</span>
+        </div>
+        <div class="worker-metrics">
+          <div class="metric">
+            <div class="metric-label">CPU Load</div>
+            <div class="metric-value">${(worker.cpu_load * 100).toFixed(1)}%</div>
+            <div class="progress-bar">
+              <div class="progress-fill" style="width: ${worker.cpu_load * 100}%"></div>
+            </div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">RAM</div>
+            <div class="metric-value">${worker.memory_mb.toFixed(0)} MB</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Jobs Activos</div>
+            <div class="metric-value">${worker.jobs_in_progress}</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Load Score</div>
+            <div class="metric-value">${worker.load_score}</div>
+            <div class="progress-bar">
+              <div class="progress-fill" style="width: ${worker.load_score}%"></div>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top: 15px; font-size: 0.85rem; color: #666;">
+          ✅ Exitosas: <strong>${worker.conversions_success}</strong> | 
+          ❌ Fallidas: <strong>${worker.conversions_failed}</strong>
+        </div>
+      `;
+      container.appendChild(card);
+    });
+    
+    // Actualizar gráficos
+    updateChartData(data.workers);
+    
+  } catch (error) {
+    console.error('Error actualizando stats:', error);
+  }
+}
+
+// Actualizar trabajos recientes
+async function updateJobs() {
+  try {
+    const response = await fetch(`${API}/jobs?limit=10`);
+    const data = await response.json();
+    
+    const tbody = document.getElementById('jobs-tbody');
+    tbody.innerHTML = '';
+    
+    if (!data.jobs || data.jobs.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" class="no-data">No hay trabajos recientes</td></tr>';
+      return;
+    }
+    
+    data.jobs.slice(0, 10).forEach(job => {
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td>${job.input_file}</td>
+        <td><strong>${job.output_format.toUpperCase()}</strong></td>
+        <td><span class="job-status-badge ${job.status}">${job.status}</span></td>
+        <td>${job.assigned_worker || '-'}</td>
+        <td>${job.worker_id || '-'}</td>
+        <td>${job.duration_seconds ? job.duration_seconds + 's' : '-'}</td>
+        <td>${job.size_reduction_percent !== undefined ? job.size_reduction_percent + '%' : '-'}</td>
+      `;
+      tbody.appendChild(row);
+    });
+    
+  } catch (error) {
+    console.error('Error actualizando jobs:', error);
+  }
+}
+
+// Actualizar todo
+async function updateDashboard() {
+  await Promise.all([updateStats(), updateJobs()]);
+}
+
+// Iniciar actualización automática
+updateDashboard();
+updateInterval = setInterval(updateDashboard, 2000);
+
+// Limpiar al cerrar
+window.addEventListener('beforeunload', () => {
+  if (updateInterval) clearInterval(updateInterval);
+});
+</script>
+
+</body>
+</html>
