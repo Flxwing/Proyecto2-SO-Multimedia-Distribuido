@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, status, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, status, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -10,6 +10,7 @@ from minio import Minio
 from minio.error import S3Error
 import urllib.parse, mimetypes
 import os, json, time, re, secrets, traceback
+from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 
 from jose import JWTError, jwt
@@ -80,6 +81,18 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=False)
 
 # =========================
+# Cola de trabajos / workers
+# =========================
+JOBS_QUEUE = "conversion:queue"
+JOB_STATUS_PREFIX = "job:status:"
+WORKER_STATUS_PREFIX = "worker:status:"
+MAX_JOB_RESULTS = 200
+
+AUDIO_FORMATS = {"mp3", "flac", "wav", "aac", "ogg", "m4a"}
+VIDEO_FORMATS = {"mp4", "avi", "mkv", "webm", "mov"}
+ALLOWED_FORMATS = AUDIO_FORMATS | VIDEO_FORMATS
+
+# =========================
 # Métricas Prometheus
 # =========================
 REQUESTS          = Counter("api_requests_total", "Total de requests")
@@ -143,6 +156,11 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 class SignupReq(BaseModel):
     username: str
     password: str
+
+class ConvertRequest(BaseModel):
+    input_file: str
+    output_format: str
+    options: Optional[Dict] = None
 
 @app.on_event("startup")
 def wait_for_redis():
@@ -265,6 +283,72 @@ SHARE_PREFIX = "share:"
 def _share_key(tok: str) -> str:
     return f"{SHARE_PREFIX}{tok}"
 
+def _decode(value):
+    return value.decode() if isinstance(value, bytes) else value
+
+def _job_key(job_id: str) -> str:
+    return f"{JOB_STATUS_PREFIX}{job_id}"
+
+def _load_json(value) -> Optional[dict]:
+    if not value:
+        return None
+    try:
+        return json.loads(_decode(value))
+    except Exception:
+        return None
+
+def _save_job(job: Dict):
+    r.set(_job_key(job["job_id"]), json.dumps(job).encode())
+
+def _list_jobs(owner: Optional[str] = None) -> List[Dict]:
+    jobs: List[Dict] = []
+    for key in r.scan_iter(f"{JOB_STATUS_PREFIX}*"):
+        raw_job = r.get(key)
+        job = _load_json(raw_job)
+        if not job:
+            continue
+        job.setdefault("job_id", _decode(key).split(":")[-1])
+        if owner and job.get("owner") != owner:
+            continue
+        jobs.append(job)
+    return jobs
+
+def _list_workers() -> List[Dict]:
+    workers: List[Dict] = []
+    for key in r.scan_iter(f"{WORKER_STATUS_PREFIX}*"):
+        data = _load_json(r.get(key))
+        if not data:
+            continue
+        data.setdefault("worker_id", _decode(key).split(":")[-1])
+        workers.append(data)
+    return workers
+
+def _select_worker() -> Optional[str]:
+    workers = _list_workers()
+    if not workers:
+        return None
+    workers.sort(key=lambda w: (w.get("jobs_in_progress", 0), w.get("cpu_load", 1.0)))
+    return workers[0].get("worker_id")
+
+def _enqueue_job(job_id: str, worker_id: Optional[str]):
+    queue_key = JOBS_QUEUE if not worker_id else f"{JOBS_QUEUE}:{worker_id}"
+    r.rpush(queue_key, job_id)
+
+def get_optional_user(authorization: Optional[str] = Header(default=None)) -> Optional[dict]:
+    if not authorization:
+        return None
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return None
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+        if not username or not user_exists(username):
+            return None
+        return {"username": username}
+    except JWTError:
+        return None
+
 @app.post("/share/{name}")
 def share_create(
     name: str,
@@ -343,3 +427,107 @@ def share_resolve(token: str):
             resp.close(); resp.release_conn()
 
     return StreamingResponse(it(), headers=headers, media_type=mime)
+
+# =========================
+# Conversión y monitoreo
+# =========================
+
+def _sanitize_filename(name: str) -> str:
+    name = (name or "").strip()
+    if not name or name.startswith("/") or ".." in name:
+        raise HTTPException(status_code=400, detail="Nombre de archivo inválido")
+    return name
+
+@app.post("/convert")
+def request_conversion(req: ConvertRequest, user: dict = Depends(get_current_user)):
+    filename = _sanitize_filename(req.input_file)
+    output_format = (req.output_format or "").lower()
+    if output_format not in ALLOWED_FORMATS:
+        raise HTTPException(status_code=400, detail="Formato de salida no soportado")
+
+    object_name = f"{user['username']}/{filename}"
+    try:
+        minio.stat_object(BUCKET, object_name)
+    except Exception:
+        raise HTTPException(status_code=404, detail="El archivo no existe")
+
+    job_id = secrets.token_hex(12)
+    job = {
+        "job_id": job_id,
+        "owner": user["username"],
+        "input_file": filename,
+        "input_object": object_name,
+        "output_format": output_format,
+        "options": req.options or {},
+        "status": "pending",
+        "progress": 0,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+    worker_id = _select_worker()
+    if worker_id:
+        job["assigned_worker"] = worker_id
+
+    _save_job(job)
+    _enqueue_job(job_id, worker_id)
+    API_JOBS_ENQUEUED.inc()
+    return {"ok": True, "job_id": job_id, "assigned_worker": worker_id}
+
+def _scrub_job(job: Dict, include_owner: bool) -> Dict:
+    data = job.copy()
+    data.pop("input_object", None)
+    if not include_owner:
+        data.pop("owner", None)
+    return data
+
+@app.get("/jobs")
+def list_jobs(status: str = "", limit: int = 50, user: Optional[dict] = Depends(get_optional_user)):
+    limit = max(1, min(limit, MAX_JOB_RESULTS))
+    owner = user["username"] if user else None
+    jobs = _list_jobs(owner=owner)
+    if status:
+        jobs = [j for j in jobs if j.get("status") == status]
+    jobs.sort(key=lambda j: j.get("created_at", ""), reverse=True)
+    include_owner = owner is None
+    return {"jobs": [_scrub_job(j, include_owner) for j in jobs[:limit]]}
+
+@app.get("/queue/stats")
+def queue_stats(user: dict = Depends(get_current_user)):
+    jobs = _list_jobs(owner=user["username"])
+    stats = {"pending": 0, "processing": 0, "completed": 0, "failed": 0}
+    for job in jobs:
+        status = job.get("status", "pending")
+        if status in stats:
+            stats[status] += 1
+    queue_length = stats["pending"] + stats["processing"]
+    return {
+        "queue_length": queue_length,
+        "stats": {
+            "pending": stats["pending"],
+            "processing": stats["processing"],
+            "completed": stats["completed"],
+            "failed": stats["failed"],
+        },
+        "total_jobs": len(jobs),
+    }
+
+@app.get("/workers/stats")
+def workers_stats():
+    workers = _list_workers()
+    total_workers = len(workers)
+    active_workers = sum(1 for w in workers if w.get("status") != "offline")
+    total_jobs_processing = sum(w.get("jobs_in_progress", 0) for w in workers)
+    total_success = sum(w.get("conversions_success", 0) for w in workers)
+    total_failed = sum(w.get("conversions_failed", 0) for w in workers)
+    avg_cpu = (sum(w.get("cpu_load", 0) for w in workers) / total_workers) if total_workers else 0
+
+    summary = {
+        "active_workers": active_workers,
+        "total_workers": total_workers,
+        "total_jobs_processing": total_jobs_processing,
+        "average_cpu_load": avg_cpu,
+        "total_conversions_success": total_success,
+        "total_conversions_failed": total_failed,
+    }
+
+    return {"summary": summary, "workers": workers}
