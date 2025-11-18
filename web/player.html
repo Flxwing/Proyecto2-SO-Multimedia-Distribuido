@@ -376,7 +376,7 @@ select,input[type="file"],input[type="text"],input[type="number"]{padding:10px;b
 </div>
 
 <script>
-const API="http://localhost:8000";
+const API="https://nonmetrical-mellissa-theistically.ngrok-free.dev";
 const TOKEN_KEY="multimedia_token";
 
 let authToken = localStorage.getItem(TOKEN_KEY) || null;
@@ -474,6 +474,7 @@ async function apiFetch(path, options = {}) {
   const opts = { ...options };
   const headers = new Headers(options.headers || {});
   headers.set("Authorization", `Bearer ${authToken}`);
+  headers.set("ngrok-skip-browser-warning", "true");
   opts.headers = headers;
   const res = await fetch(url, opts);
   if (res.status === 401) {
@@ -524,12 +525,16 @@ async function refresh() {
   try {
     const res = await apiFetch("/media");
     const data = await readJson(res);
+    console.log('Respuesta de la API:', data);  // Añadir esto para depurar
     if (!res.ok) throw new Error(data.detail || "No se pudieron obtener los archivos");
+
     const files = data.objects || [];
     filesListEl.innerHTML = "";
+
     if (files.length === 0) {
       filesListEl.innerHTML = '<li class="audio-empty">No hay archivos aún</li>';
     }
+
     files.forEach((n) => {
       const li = document.createElement("li");
       const div = document.createElement("div");
@@ -546,20 +551,46 @@ async function refresh() {
       const playBtn = document.createElement("button");
       playBtn.textContent = "▶️ Reproducir";
       playBtn.className = "btn-small btn-success";
-      playBtn.onclick = (e) => { e.stopPropagation(); renderPlayer(n); };
+      playBtn.onclick = (e) => {
+        e.stopPropagation();
+        renderPlayer(n);
+      };
 
       const convertBtn = document.createElement("button");
       convertBtn.textContent = "🔄 Convertir";
       convertBtn.className = "btn-small";
-      convertBtn.onclick = (e) => { e.stopPropagation(); selectFileForConversion(n); };
+      convertBtn.onclick = (e) => {
+        e.stopPropagation();
+        selectFileForConversion(n);
+      };
+
+      const shareBtn = document.createElement("button");
+      shareBtn.textContent = "🔗 Compartir";
+      shareBtn.className = "btn-small";
+      shareBtn.onclick = async (e) => {
+        e.stopPropagation();
+        await shareFile(n);
+      };
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.textContent = "🗑 Borrar";
+      deleteBtn.className = "btn-small btn-danger";
+      deleteBtn.onclick = async (e) => {
+        e.stopPropagation();
+        await deleteFile(n);
+      };
 
       actions.appendChild(playBtn);
       actions.appendChild(convertBtn);
+      actions.appendChild(shareBtn);   // 👈 junto al convertir
+      actions.appendChild(deleteBtn);  // 👈 y el borrar
+
       div.appendChild(nameSpan);
       div.appendChild(actions);
       li.appendChild(div);
       filesListEl.appendChild(li);
     });
+
     updateAudioLibrary(files);
   } catch (err) {
     filesListEl.innerHTML = `<li class="audio-empty">${err.message}</li>`;
@@ -599,6 +630,104 @@ async function convertFile() {
   } finally {
     btn.disabled = false;
     btn.textContent = "Convertir";
+  }
+}
+
+async function deleteFile(name) {
+  if (!confirm(`¿Seguro que quieres eliminar "${name}"?`)) return;
+
+  try {
+    const res = await apiFetch(`/media/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    });
+    const data = await readJson(res);
+    if (!res.ok || !data.ok) {
+      throw new Error(data.detail || "No se pudo borrar el archivo");
+    }
+
+    // Si estaba seleccionado para convertir, limpia el panel
+    if (selectedFileForConversion === name) {
+      selectedFileForConversion = null;
+      document.getElementById("convertOptions").style.display = "none";
+      document.getElementById("selectedFile").textContent = "";
+    }
+
+    refresh(); // recarga la lista
+  } catch (err) {
+    alert("Error al borrar: " + err.message);
+  }
+}
+
+async function copyToClipboard(text) {
+  // 1. Intento moderno (HTTPS o localhost)
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+      console.warn("Clipboard API falló:", e);
+    }
+  }
+
+  // 2. Fallback con textarea oculto
+  try {
+    const textArea = document.createElement("textarea");
+    textArea.value = text;
+
+    // Evitar que se vea / mueva el scroll
+    textArea.style.position = "fixed";
+    textArea.style.left = "-9999px";
+    textArea.style.top = "0";
+    document.body.appendChild(textArea);
+
+    textArea.focus();
+    textArea.select();
+
+    const ok = document.execCommand("copy");
+    document.body.removeChild(textArea);
+    return ok;
+  } catch (e) {
+    console.warn("Fallback execCommand falló:", e);
+    return false;
+  }
+}
+
+async function shareFile(name) {
+  const minutesStr = prompt(
+    "¿Por cuántos minutos deseas compartir el archivo?",
+    "60"
+  );
+  if (minutesStr === null) return;
+
+  const minutes = Number(minutesStr);
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    alert("Minutos inválidos");
+    return;
+  }
+
+  try {
+    const res = await apiFetch(
+      `/share/${encodeURIComponent(name)}?minutes=${minutes}`,
+      { method: "POST" }
+    );
+    const data = await readJson(res);
+    if (!res.ok) {
+      throw new Error(data.detail || "No se pudo crear el enlace de compartido");
+    }
+    if (!data.url) throw new Error("La respuesta no contiene una URL");
+
+    const url = data.url;
+
+    const copied = await copyToClipboard(url);
+    if (copied) {
+      alert(`Enlace de compartido copiado al portapapeles:\n${url}`);
+    } else {
+      alert(
+        `No se pudo copiar automáticamente.\n\nEnlace de compartido:\n${url}\n\n(Cópialo manualmente).`
+      );
+    }
+  } catch (err) {
+    alert("Error al compartir: " + err.message);
   }
 }
 
@@ -889,7 +1018,10 @@ async function handleLogin(e) {
   try {
     const res = await fetch(`${API}/auth/login`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+       headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "ngrok-skip-browser-warning": "true"
+      },
       body
     });
     const data = await readJson(res);
@@ -909,7 +1041,10 @@ async function handleSignup(e) {
   try {
     const res = await fetch(`${API}/auth/signup`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "ngrok-skip-browser-warning": "true"
+      },
       body: JSON.stringify({ username, password })
     });
     const data = await readJson(res);
