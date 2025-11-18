@@ -131,6 +131,7 @@ def create_user(u: str, p: str):
         "password_hash": pwd_hash,
         "created_at": datetime.utcnow().isoformat()
     })
+    print(f"✅ Usuario creado: {u}, clave Redis: {user_key(u)}")
 
 def create_access_token(data: dict, minutes: int = ACCESS_TOKEN_EXPIRE_MINUTES):
     to_encode = data.copy()
@@ -139,7 +140,13 @@ def create_access_token(data: dict, minutes: int = ACCESS_TOKEN_EXPIRE_MINUTES):
 
 def verify_user(username: str, password: str) -> bool:
     h = get_user_hash(username)
-    return bool(h) and pwd_context.verify(password, h)
+    print(f"🔍 Verificando usuario: {username}, hash encontrado: {bool(h)}")
+    if not h:
+        print(f"❌ Usuario {username} no existe en Redis")
+        return False
+    result = pwd_context.verify(password, h)
+    print(f"{'✅' if result else '❌'} Verificación de contraseña para {username}: {result}")
+    return result
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     cred_exc = HTTPException(status_code=401, detail="Invalid credentials",
@@ -175,11 +182,13 @@ def wait_for_redis():
 @app.post("/auth/signup")
 def signup(req: SignupReq):
     u = req.username.strip(); p = req.password
+    print(f"📝 Intento de registro: usuario='{u}'")
     if not USERNAME_RE.match(u):
         raise HTTPException(status_code=400, detail="Usuario inválido (3–32, letras/números/._-)")
     if len(p) < 8:
         raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres")
     if user_exists(u):
+        print(f"⚠️  Usuario '{u}' ya existe")
         raise HTTPException(status_code=409, detail="El usuario ya existe")
 
     create_user(u, p)
@@ -189,11 +198,31 @@ def signup(req: SignupReq):
 
 @app.post("/auth/login")
 async def login(form: OAuth2PasswordRequestForm = Depends()):
+    print(f"🔑 Intento de login: usuario='{form.username}'")
     if not verify_user(form.username, form.password):
         raise HTTPException(status_code=400, detail="Incorrect username or password")
     API_LOGINS.inc()
     token = create_access_token({"sub": form.username})
+    print(f"✅ Login exitoso: {form.username}")
     return {"access_token": token, "token_type": "bearer"}
+
+@app.get("/auth/debug/users")
+def debug_users():
+    """Debug endpoint para listar usuarios en Redis"""
+    try:
+        keys = r.keys("user:*")
+        users = []
+        for key in keys:
+            username = key.decode().replace("user:", "")
+            data = r.hgetall(key)
+            users.append({
+                "username": username,
+                "created_at": data.get(b"created_at", b"").decode() if data else None,
+                "has_hash": bool(data.get(b"password_hash"))
+            })
+        return {"total": len(users), "users": users}
+    except Exception as e:
+        return {"error": str(e), "users": []}
 
 # =========================
 # Bucket

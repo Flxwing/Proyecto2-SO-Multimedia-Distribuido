@@ -1,0 +1,28 @@
+# ⚠️ IMPORTANTE: Ejecuta estos comandos MANUALMENTE en PowerShell
+
+# 1. Crear el volumen en Dallas (región correcta)
+fly volumes create media_data --region dfw --size 10 -y
+
+# 2. Desplegar la aplicación
+fly deploy
+
+# 3. Verificar que está corriendo
+fly status
+
+# 4. Abrir la app en el navegador
+fly open
+
+# 5. Ver logs si hay problemas
+fly logs
+
+# ================================
+# REGIONES DISPONIBLES ALTERNATIVAS
+# ================================
+# Si dfw tampoco funciona, prueba con:
+# - iad (Virginia, USA)
+# - sjc (San José, California)
+# - gru (São Paulo, Brazil)
+# - scl (Santiago, Chile)
+
+# Para ver todas las regiones disponibles:
+fly regions list

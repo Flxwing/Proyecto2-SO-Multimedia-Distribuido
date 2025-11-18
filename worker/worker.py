@@ -16,7 +16,7 @@ CONV_DURATION = Histogram("worker_conversion_duration_seconds", "Duración de co
 FILE_SIZE_REDUCTION = Histogram("worker_file_size_reduction_percent", "Porcentaje de reducción de tamaño")
 
 # Configuración
-WORKER_ID = socket.gethostname()
+WORKER_ID = os.getenv("WORKER_ID", socket.gethostname())
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "9101"))
 

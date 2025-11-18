@@ -16,6 +16,27 @@ body {
   min-height: 100vh;
 }
 
+.api-endpoint-badge {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  padding: 10px 16px;
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+  z-index: 999;
+  box-shadow: 0 12px 22px rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.3px;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.api-endpoint-badge:hover { transform: translateY(-1px); box-shadow: 0 16px 28px rgba(0,0,0,0.4); }
+.api-endpoint-badge span { font-weight: 600; }
+
 .header {
   text-align: center;
   color: white;
@@ -432,7 +453,52 @@ body {
 </div>
 
 <script>
-const API = 'https://nonmetrical-mellissa-theistically.ngrok-free.dev';
+const MONITOR_STORAGE_KEY = 'monitor_api_base';
+const DEFAULT_API_BASE = 'https://multimedia-distribuido.fly.dev';
+
+function normalizeApiBase(base) {
+  if (!base) return '';
+  return base.replace(/\/$/, '');
+}
+
+const monitorQueryBase = new URLSearchParams(location.search).get('api');
+if (monitorQueryBase) {
+  localStorage.setItem(MONITOR_STORAGE_KEY, normalizeApiBase(monitorQueryBase.trim()));
+}
+
+let API = normalizeApiBase(localStorage.getItem(MONITOR_STORAGE_KEY) || DEFAULT_API_BASE);
+
+function promptApiBase() {
+  const next = prompt('Endpoint base de la API', API);
+  if (!next) return;
+  const normalized = normalizeApiBase(next.trim());
+  if (!normalized) return;
+  localStorage.setItem(MONITOR_STORAGE_KEY, normalized);
+  API = normalized;
+  const label = document.getElementById('apiEndpointLabel');
+  if (label) label.textContent = API;
+  location.reload();
+}
+
+function injectApiBadge() {
+  const badge = document.createElement('div');
+  badge.className = 'api-endpoint-badge';
+    badge.innerHTML = `API: <span id="apiEndpointLabel">${API}</span>`;
+  badge.title = 'Haz clic para cambiar la URL del backend';
+  badge.onclick = promptApiBase;
+  document.body.appendChild(badge);
+}
+
+injectApiBadge();
+
+function apiFetch(path, init = {}) {
+  const url = path.startsWith('http') ? path : `${API}${path}`;
+  const options = { ...init };
+  options.headers = new Headers(init.headers || {});
+  options.headers.set('ngrok-skip-browser-warning', 'true');
+  return fetch(url, options);
+}
+
 let updateInterval;
 
 // Configuración de gráficos
@@ -614,7 +680,7 @@ function updateChartData(workers) {
 // Actualizar estadísticas generales
 async function updateStats() {
   try {
-    const response = await fetch(`${API}/workers/stats`);
+    const response = await apiFetch('/workers/stats');
     const data = await response.json();
     
     // Estadísticas generales
@@ -680,7 +746,7 @@ async function updateStats() {
 // Actualizar trabajos recientes
 async function updateJobs() {
   try {
-    const response = await fetch(`${API}/jobs?limit=10`);
+    const response = await apiFetch('/jobs?limit=10');
     const data = await response.json();
     
     const tbody = document.getElementById('jobs-tbody');

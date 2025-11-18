@@ -1,0 +1,38 @@
+# Dockerfile optimizado para Fly.io con todos los servicios
+FROM python:3.11-slim
+
+# Instalar dependencias del sistema
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    redis-server \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Instalar MinIO
+RUN curl -fsSL https://dl.min.io/server/minio/release/linux-amd64/minio -o /usr/local/bin/minio && \
+    chmod +x /usr/local/bin/minio
+
+# Crear directorios
+WORKDIR /app
+RUN mkdir -p /data/minio /data/redis
+
+# Instalar dependencias Python
+COPY api/requirements.txt /app/api/
+COPY worker/requirements.txt /app/worker/
+RUN pip install --no-cache-dir \
+    -r /app/api/requirements.txt \
+    -r /app/worker/requirements.txt
+
+# Copiar código
+COPY api/ /app/api/
+COPY worker/ /app/worker/
+COPY monitoring/ /app/monitoring/
+COPY start-services.sh /app/
+
+RUN chmod +x /app/start-services.sh
+
+# Exponer puertos
+EXPOSE 8000 9000 9001 6379
+
+# Script de inicio
+CMD ["/app/start-services.sh"]

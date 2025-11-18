@@ -96,6 +96,27 @@ h1{
   color:#f0e9ff;
 }
 
+.api-endpoint-badge{
+  position:fixed;
+  top:18px;
+  right:18px;
+  background:rgba(0,0,0,0.75);
+  color:#fff;
+  padding:10px 16px;
+  border-radius:999px;
+  font-size:12px;
+  cursor:pointer;
+  z-index:999;
+  box-shadow:0 12px 22px rgba(0,0,0,0.35);
+  display:flex;
+  align-items:center;
+  gap:6px;
+  letter-spacing:0.3px;
+  transition:transform 0.2s,box-shadow 0.2s;
+}
+.api-endpoint-badge:hover{transform:translateY(-1px);box-shadow:0 16px 28px rgba(0,0,0,0.4)}
+.api-endpoint-badge span{font-weight:600}
+
 .btn-outline{background:transparent;border:1px solid rgba(255,255,255,0.6);color:#fff;box-shadow:none}
 .btn-outline:hover{background:rgba(255,255,255,0.1);box-shadow:none}
 .auth-card .btn-outline{
@@ -226,6 +247,105 @@ select,input[type="file"],input[type="text"],input[type="number"]{padding:10px;b
 #audioPlaylist li.active{border-color:#2196F3;background:#bbdefb}
 .audio-empty{color:#999;text-align:center;padding:16px}
 .repeat-mode::after{content:attr(data-mode);font-size:11px;margin-left:6px;color:#555}
+
+/* Modal de compartir */
+.share-modal-overlay{
+  display:none;
+  position:fixed;
+  top:0;left:0;right:0;bottom:0;
+  background:rgba(0,0,0,0.7);
+  z-index:9999;
+  align-items:center;
+  justify-content:center;
+  backdrop-filter:blur(4px);
+}
+.share-modal-overlay.active{display:flex}
+.share-modal{
+  background:white;
+  border-radius:20px;
+  padding:32px;
+  max-width:580px;
+  width:90%;
+  box-shadow:0 30px 60px rgba(0,0,0,0.3);
+  animation:modalSlideIn 0.3s ease-out;
+}
+@keyframes modalSlideIn{
+  from{transform:translateY(-30px);opacity:0}
+  to{transform:translateY(0);opacity:1}
+}
+.share-modal h2{
+  margin:0 0 10px;
+  color:#352f63;
+  font-size:1.6rem;
+}
+.share-modal p{
+  color:#6b678f;
+  margin-bottom:24px;
+  font-size:0.95rem;
+}
+.share-link-container{
+  background:#f7f5ff;
+  border:2px solid #e3dfff;
+  border-radius:12px;
+  padding:16px;
+  margin-bottom:20px;
+  display:flex;
+  gap:10px;
+  align-items:center;
+}
+.share-link-text{
+  flex:1;
+  font-family:monospace;
+  font-size:14px;
+  color:#4c5dd6;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.share-copy-btn{
+  padding:10px 20px;
+  background:linear-gradient(135deg,#667eea,#764ba2);
+  color:white;
+  border:none;
+  border-radius:10px;
+  cursor:pointer;
+  font-weight:600;
+  font-size:14px;
+  transition:transform 0.2s,box-shadow 0.2s;
+  white-space:nowrap;
+}
+.share-copy-btn:hover{
+  transform:translateY(-2px);
+  box-shadow:0 8px 16px rgba(102,126,234,0.4);
+}
+.share-copy-btn.copied{
+  background:#2e7d32;
+}
+.share-modal-actions{
+  display:flex;
+  gap:12px;
+  justify-content:flex-end;
+}
+.share-close-btn{
+  padding:10px 20px;
+  background:#e0e0e0;
+  color:#333;
+  border:none;
+  border-radius:10px;
+  cursor:pointer;
+  font-weight:600;
+  font-size:14px;
+  transition:background 0.2s;
+}
+.share-close-btn:hover{
+  background:#bdbdbd;
+}
+.share-expires{
+  font-size:13px;
+  color:#888;
+  text-align:center;
+  margin-top:12px;
+}
 </style>
 </head><body>
 <h1>🎬 Sistema Multimedia Distribuido</h1>
@@ -376,8 +496,44 @@ select,input[type="file"],input[type="text"],input[type="number"]{padding:10px;b
 </div>
 
 <script>
-const API="https://nonmetrical-mellissa-theistically.ngrok-free.dev";
 const TOKEN_KEY="multimedia_token";
+const API_STORAGE_KEY="multimedia_api_base";
+const DEFAULT_API_BASE="https://multimedia-distribuido.fly.dev";
+
+function normalizeApiBase(base){
+  if(!base) return "";
+  return base.replace(/\/$/,"");
+}
+
+const queryBase=new URLSearchParams(location.search).get("api");
+if(queryBase){
+  localStorage.setItem(API_STORAGE_KEY,normalizeApiBase(queryBase.trim()));
+}
+
+let API=normalizeApiBase(localStorage.getItem(API_STORAGE_KEY) || DEFAULT_API_BASE);
+
+function promptForApiBase(){
+  const next=prompt("Endpoint base de la API",API);
+  if(!next) return;
+  const normalized=normalizeApiBase(next.trim());
+  if(!normalized) return;
+  localStorage.setItem(API_STORAGE_KEY,normalized);
+  API=normalized;
+  const label=document.getElementById("apiEndpointLabel");
+  if(label) label.textContent=API;
+  location.reload();
+}
+
+function injectApiBadge(){
+  const badge=document.createElement("div");
+  badge.className="api-endpoint-badge";
+  badge.innerHTML=`API: <span id="apiEndpointLabel">${API}</span>`;
+  badge.title="Haz clic para cambiar la URL del backend";
+  badge.onclick=promptForApiBase;
+  document.body.appendChild(badge);
+}
+
+injectApiBadge();
 
 let authToken = localStorage.getItem(TOKEN_KEY) || null;
 let currentUser = null;
@@ -717,18 +873,54 @@ async function shareFile(name) {
     if (!data.url) throw new Error("La respuesta no contiene una URL");
 
     const url = data.url;
-
-    const copied = await copyToClipboard(url);
-    if (copied) {
-      alert(`Enlace de compartido copiado al portapapeles:\n${url}`);
-    } else {
-      alert(
-        `No se pudo copiar automáticamente.\n\nEnlace de compartido:\n${url}\n\n(Cópialo manualmente).`
-      );
-    }
+    
+    // Mostrar modal con el enlace
+    showShareModal(url, minutes);
+    
   } catch (err) {
     alert("Error al compartir: " + err.message);
   }
+}
+
+function showShareModal(url, minutes) {
+  const overlay = document.getElementById("shareModalOverlay");
+  const linkText = document.getElementById("shareLinkText");
+  const expiresText = document.getElementById("shareExpiresText");
+  const copyBtn = document.getElementById("shareCopyBtn");
+  const closeBtn = document.getElementById("shareCloseBtn");
+  
+  linkText.textContent = url;
+  expiresText.textContent = `⏱️ Expira en ${minutes} minuto${minutes !== 1 ? 's' : ''}`;
+  
+  // Resetear estado del botón
+  copyBtn.textContent = "📋 Copiar";
+  copyBtn.classList.remove("copied");
+  
+  // Mostrar modal
+  overlay.classList.add("active");
+  
+  // Event listener para copiar
+  copyBtn.onclick = async () => {
+    const copied = await copyToClipboard(url);
+    if (copied) {
+      copyBtn.textContent = "✅ Copiado";
+      copyBtn.classList.add("copied");
+      setTimeout(() => {
+        copyBtn.textContent = "📋 Copiar";
+        copyBtn.classList.remove("copied");
+      }, 2000);
+    } else {
+      alert("No se pudo copiar automáticamente. Copia el enlace manualmente.");
+    }
+  };
+  
+  // Event listeners para cerrar
+  closeBtn.onclick = () => overlay.classList.remove("active");
+  overlay.onclick = (e) => {
+    if (e.target === overlay) {
+      overlay.classList.remove("active");
+    }
+  };
 }
 
 async function refreshJobs() {
@@ -1008,10 +1200,12 @@ function initializeApp() {
 }
 
 async function handleLogin(e) {
+  console.log("🔑 handleLogin llamado");
   e.preventDefault();
   loginError.textContent = "";
   const username = document.getElementById("loginUser").value.trim();
   const password = document.getElementById("loginPass").value.trim();
+  console.log("Usuario:", username);
   const body = new URLSearchParams();
   body.append("username", username);
   body.append("password", password);
@@ -1034,10 +1228,12 @@ async function handleLogin(e) {
 }
 
 async function handleSignup(e) {
+  console.log("📝 handleSignup llamado");
   e.preventDefault();
   signupError.textContent = "";
   const username = document.getElementById("signupUser").value.trim();
   const password = document.getElementById("signupPass").value.trim();
+  console.log("Usuario:", username);
   try {
     const res = await fetch(`${API}/auth/signup`, {
       method: "POST",
@@ -1139,9 +1335,35 @@ loginForm.addEventListener("submit", handleLogin);
 signupForm.addEventListener("submit", handleSignup);
 logoutBtn.addEventListener("click", logout);
 
+console.log("✅ Event listeners registrados correctamente");
+console.log("loginForm:", loginForm);
+console.log("signupForm:", signupForm);
+
 if (authToken) {
   applyToken(authToken, false);
 }
 updateAuthUI();
 </script>
+
+<!-- Modal para compartir archivos -->
+<div class="share-modal-overlay" id="shareModalOverlay">
+  <div class="share-modal">
+    <h2>🔗 Compartir Archivo</h2>
+    <p>Enlace temporal generado. Este enlace expirará después del tiempo especificado.</p>
+    
+    <div class="share-link-container">
+      <div class="share-link-text" id="shareLinkText"></div>
+      <button class="share-copy-btn" id="shareCopyBtn">
+        📋 Copiar
+      </button>
+    </div>
+    
+    <div class="share-expires" id="shareExpiresText"></div>
+    
+    <div class="share-modal-actions">
+      <button class="share-close-btn" id="shareCloseBtn">Cerrar</button>
+    </div>
+  </div>
+</div>
+
 </body></html>

@@ -12,8 +12,8 @@ services:
       # NUEVO (firma y TTL de enlaces públicos)
       - SHARE_SECRET=change-this-please
       - SHARE_TTL_SECONDS=21600     # 6 horas (ajústalo)
-      # (Opcional) si usas túnel / dominio público para el 8000:
-      - PUBLIC_BASE_URL=https://nonmetrical-mellissa-theistically.ngrok-free.dev
+      # URL pública del sistema (actualizar según el despliegue)
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-https://multimedia-distribuido.fly.dev}
     depends_on: [redis, minio]
   worker_a:
     build: ./worker

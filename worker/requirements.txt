@@ -1,0 +1,4 @@
+prometheus-client
+redis
+minio
+psutil
